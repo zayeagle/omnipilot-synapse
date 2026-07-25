@@ -1,0 +1,8 @@
+{
+  "interactive_mode": true,
+  "design_split": false,
+  "confirmation_level": "auto",
+  "context_mode": "slim",
+  "sub_agents": "auto",
+  "platform_override": null
+}
