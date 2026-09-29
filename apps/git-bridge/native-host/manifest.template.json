@@ -1,0 +1,16 @@
+{
+  "name": "com.omnipilot.synapse.git_bridge",
+  "description": "OmniPilot Synapse git companion (native messaging host)",
+  "targets": {
+    "chrome": {
+      "type": "stdio",
+      "path": "${COMPANION_PATH}",
+      "allowed_origins": ["chrome-extension://${CHROME_EXTENSION_ID}/"]
+    },
+    "firefox": {
+      "type": "stdio",
+      "path": "${COMPANION_PATH}",
+      "allowed_extensions": ["${FIREFOX_EXTENSION_ID}"]
+    }
+  }
+}

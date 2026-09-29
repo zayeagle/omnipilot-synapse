@@ -1,0 +1,158 @@
+/**
+ * The single inbound-message funnel for the background worker.
+ *
+ * Every message passes through, in order: sender authorization → payload sanitisation is the
+ * handler's job → rate limiting → dispatch → scrubbed error mapping. Keeping this in one place is
+ * what makes TC-F4-I01 meaningful: a page-context sender is rejected here, before any handler that
+ * could touch a credential ever runs.
+ */
+
+import {
+  MessageError,
+  assertRequestAllowed,
+  fail,
+  ok,
+  type ErrorCode,
+  type ExtensionRequest,
+  type ExtensionResponse,
+  type RequestType,
+  type SenderLike,
+} from '../messages';
+import { scrubError } from '../security/redact';
+import { VaultLockedError } from '../security/key-session';
+import { WrongPassphraseError } from '../security/crypto-key';
+import { KeyedRateLimiter } from '../security/rate-limit';
+
+export type Handler = (request: ExtensionRequest, sender: SenderLike | null) => Promise<ExtensionResponse>;
+
+export type HandlerMap = Partial<Record<RequestType, Handler>>;
+
+export interface RouterLimiters {
+  ai: KeyedRateLimiter;
+  github: KeyedRateLimiter;
+  vault: KeyedRateLimiter;
+}
+
+export interface MessageRouterOptions {
+  handlers: HandlerMap;
+  limiters: RouterLimiters;
+  /** Configured credentials, used to scrub anything that could echo a secret back. */
+  secrets?: () => Promise<ReadonlyArray<string | null | undefined>>;
+  logger?: (message: string, detail?: string) => void;
+}
+
+/** Which budget a request spends. Credential and vault traffic is deliberately the tightest. */
+export function limiterKeyFor(type: RequestType): keyof RouterLimiters {
+  if (type === 'distill.request') return 'ai';
+  if (type === 'capture.request' || type === 'store.probe') return 'github';
+  return 'vault';
+}
+
+export function errorCodeOf(error: unknown): ErrorCode {
+  if (error instanceof VaultLockedError) return 'locked';
+  if (error instanceof WrongPassphraseError) return 'wrongPassphrase';
+  if (error instanceof MessageError) return error.code;
+  // Classified errors (storage, AI, distill) declare their own protocol code.
+  const declared = (error as { code?: unknown } | null)?.code;
+  if (typeof declared === 'string' && ERROR_CODES.has(declared as ErrorCode)) {
+    return declared as ErrorCode;
+  }
+  const name = (error as { name?: unknown } | null)?.name;
+  if (typeof name === 'string') {
+    if (name === 'EmptyResponseError') return 'emptyResponse';
+    if (name === 'DistillParseError') return 'badJson';
+    if (name === 'CkfError') return 'parse';
+  }
+  return 'unknown';
+}
+
+const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
+  'auth',
+  'scope',
+  'notFound',
+  'conflict',
+  'rateLimited',
+  'timeout',
+  'network',
+  'locked',
+  'needVault',
+  'wrongPassphrase',
+  'passphraseTooShort',
+  'badJson',
+  'emptyResponse',
+  'publicRepo',
+  'notConfigured',
+  'parse',
+  'validation',
+  'unknown',
+]);
+
+export class MessageRouter {
+  private readonly handlers: HandlerMap;
+  private readonly limiters: RouterLimiters;
+  private readonly secrets: () => Promise<ReadonlyArray<string | null | undefined>>;
+  private readonly logger: (message: string, detail?: string) => void;
+
+  constructor(options: MessageRouterOptions) {
+    this.handlers = options.handlers;
+    this.limiters = options.limiters;
+    this.secrets = options.secrets ?? (async () => []);
+    this.logger = options.logger ?? (() => undefined);
+  }
+
+  private async safeMessage(error: unknown): Promise<string> {
+    return scrubError(error, await this.secrets());
+  }
+
+  private bucketKey(sender: SenderLike | null | undefined): string {
+    const tabId = sender?.tab?.id;
+    return typeof tabId === 'number' ? `tab:${tabId}` : 'internal';
+  }
+
+  async handle(request: unknown, sender?: SenderLike | null): Promise<ExtensionResponse> {
+    let type: RequestType;
+    try {
+      type = assertRequestAllowed(request, sender);
+    } catch (error) {
+      const code = errorCodeOf(error);
+      this.logger('message rejected', `${code}`);
+      return fail(await this.safeMessage(error), code);
+    }
+
+    const decision = this.limiters[limiterKeyFor(type)].check(this.bucketKey(sender));
+    if (!decision.allowed) {
+      const seconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
+      return fail(`rate limited (retry in ${seconds}s)`, 'rateLimited');
+    }
+
+    const handler = this.handlers[type];
+    if (!handler) return fail(`no handler registered for ${type}`, 'validation');
+
+    try {
+      return await handler(request as ExtensionRequest, sender ?? null);
+    } catch (error) {
+      const code = errorCodeOf(error);
+      const message = await this.safeMessage(error);
+      this.logger(`handler failed: ${type}`, message);
+      return fail(message, code);
+    }
+  }
+}
+
+export function createRouterOptions(
+  handlers: HandlerMap,
+  overrides: Partial<Omit<MessageRouterOptions, 'handlers'>> = {},
+): MessageRouterOptions {
+  const now = Date.now;
+  return {
+    handlers,
+    limiters: {
+      ai: new KeyedRateLimiter({ perKeyMax: 30, globalMax: 90, windowMs: 60_000, now }),
+      github: new KeyedRateLimiter({ perKeyMax: 60, globalMax: 180, windowMs: 60_000, now }),
+      vault: new KeyedRateLimiter({ perKeyMax: 12, globalMax: 30, windowMs: 60_000, now }),
+    },
+    ...overrides,
+  };
+}
+
+export { ok };

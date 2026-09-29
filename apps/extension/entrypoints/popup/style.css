@@ -1,0 +1,364 @@
+/*
+ * Popup console styles. No framework, no external assets, no remote fonts: the popup is a popup.
+ * Width is pinned inside the 360–420 px budget the design asks for.
+ */
+
+:root {
+  color-scheme: light dark;
+  --op-bg: #ffffff;
+  --op-fg: #111827;
+  --op-muted: #6b7280;
+  --op-line: #e5e7eb;
+  --op-accent: #1f6feb;
+  --op-danger: #b91c1c;
+  --op-danger-bg: #fef2f2;
+  --op-warn-bg: #fff7ed;
+  --op-ok: #166534;
+  --op-ok-bg: #f0fdf4;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --op-bg: #111827;
+    --op-fg: #f9fafb;
+    --op-muted: #9ca3af;
+    --op-line: #374151;
+    --op-accent: #58a6ff;
+    --op-danger: #fca5a5;
+    --op-danger-bg: #450a0a;
+    --op-warn-bg: #431407;
+    --op-ok: #86efac;
+    --op-ok-bg: #052e16;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 400px;
+  margin: 0;
+  background: var(--op-bg);
+  color: var(--op-fg);
+  font: 13px/1.5 -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.popup {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px;
+}
+
+.popup h1 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.popup h2 {
+  margin: 0 0 6px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--op-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.tagline {
+  margin: 2px 0 0;
+  color: var(--op-muted);
+  font-size: 11px;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.row .spacer {
+  flex: 1;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.switch input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--op-accent);
+}
+
+button {
+  font: inherit;
+  padding: 6px 10px;
+  border: 1px solid var(--op-line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) {
+  border-color: var(--op-accent);
+  color: var(--op-accent);
+}
+
+button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+button.primary {
+  background: var(--op-accent);
+  border-color: var(--op-accent);
+  color: #ffffff;
+  font-weight: 600;
+}
+
+button.primary:hover:not(:disabled) {
+  filter: brightness(1.08);
+  color: #ffffff;
+}
+
+button.link {
+  padding: 2px 6px;
+  border-color: transparent;
+  color: var(--op-accent);
+}
+
+.notice {
+  margin: 0;
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--op-warn-bg);
+  border: 1px solid var(--op-line);
+}
+
+.notice[data-kind="ok"] {
+  background: var(--op-ok-bg);
+  color: var(--op-ok);
+}
+
+.notice[data-kind="blocked"] {
+  color: var(--op-danger);
+  border-color: currentColor;
+}
+
+dl.status {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 3px 10px;
+  margin: 0;
+}
+
+dl.status dt {
+  color: var(--op-muted);
+  white-space: nowrap;
+}
+
+dl.status dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+dl.status dd[data-kind="public"] {
+  color: var(--op-danger);
+  font-weight: 600;
+}
+
+ul.inbox {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 190px;
+  overflow-y: auto;
+  border-top: 1px solid var(--op-line);
+}
+
+ul.inbox li {
+  padding: 7px 0;
+  border-bottom: 1px solid var(--op-line);
+}
+
+ul.inbox li.empty {
+  color: var(--op-muted);
+  text-align: center;
+}
+
+.inbox-title {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.inbox-meta {
+  display: block;
+  color: var(--op-muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inbox-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/*
+ * 待处理 (F3): the AI's proposals. Rows are dense on purpose — the popup is 400 px wide, so the card is a
+ * summary plus its decisions, never the full note (the note lives in the repository).
+ */
+ul.pending {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 300px;
+  overflow-y: auto;
+  border-top: 1px solid var(--op-line);
+}
+
+ul.pending li.pending-card {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--op-line);
+}
+
+ul.pending li.empty {
+  color: var(--op-muted);
+  text-align: center;
+}
+
+.card-summary {
+  display: block;
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+}
+
+ul.points {
+  margin: 3px 0 0;
+  padding-left: 18px;
+  color: var(--op-muted);
+  font-size: 12px;
+}
+
+ul.points li {
+  margin: 1px 0;
+}
+
+.card-tags {
+  display: block;
+  margin-top: 3px;
+  color: var(--op-muted);
+  font-size: 11px;
+}
+
+/* A source path and an explanation can be long: unlike the one-line metadata above, they wrap, not clip. */
+.card-source,
+.pending-note {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.pending-result {
+  margin: 4px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.pending-result:empty {
+  display: none;
+}
+
+.pending-result[data-kind="success"] {
+  color: var(--op-ok);
+}
+
+.pending-result[data-kind="error"] {
+  color: var(--op-danger);
+}
+
+.pending-result[data-kind="info"] {
+  color: var(--op-muted);
+}
+
+.pending-hint {
+  margin: 4px 0 0;
+  color: var(--op-muted);
+  font-size: 11px;
+}
+
+/* 改写: the two fields a human may correct, revealed in place of the three buttons. */
+.card-edit {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+.card-edit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.card-edit-field .field-text {
+  color: var(--op-muted);
+  font-size: 11px;
+}
+
+.card-edit input,
+.card-edit textarea {
+  width: 100%;
+  font: inherit;
+  padding: 4px 6px;
+  border: 1px solid var(--op-line);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+}
+
+.card-edit textarea {
+  resize: vertical;
+}
+
+.toast {
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--op-line);
+  background: var(--op-ok-bg);
+  color: var(--op-ok);
+  overflow-wrap: anywhere;
+}
+
+.toast[hidden] {
+  display: none;
+}
+
+.toast[data-kind="error"] {
+  background: var(--op-danger-bg);
+  color: var(--op-danger);
+  border-color: currentColor;
+}
+
+.toast[data-kind="info"] {
+  background: transparent;
+  color: var(--op-fg);
+}
+
+.toast button {
+  margin-left: 6px;
+  padding: 1px 6px;
+}

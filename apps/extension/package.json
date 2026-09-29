@@ -1,0 +1,36 @@
+{
+  "name": "@omnipilot/synapse-extension",
+  "description": "OmniPilot Synapse browser extension — capture → inbox → AI distill → GitHub knowledge base",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "icons": "node scripts/gen-icons.mjs",
+    "prebuild": "npm run icons",
+    "prezip": "npm run icons",
+    "dev": "wxt",
+    "dev:firefox": "wxt -b firefox",
+    "build": "wxt build",
+    "build:firefox": "wxt build -b firefox",
+    "assert:content": "node scripts/assert-content-no-secrets.mjs",
+    "zip": "wxt zip",
+    "zip:firefox": "wxt zip -b firefox",
+    "pack": "node scripts/pack.mjs",
+    "postinstall": "wxt prepare",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:int": "vitest run --config vitest.int.config.ts",
+    "test:reg": "vitest run lib/core lib/security lib/store lib/capture lib/providers.test.ts lib/ai-client.test.ts lib/ai-parse.test.ts lib/distill.test.ts lib/settings-store.test.ts lib/status.test.ts lib/ui",
+    "test:smk": "npm run build && npm run assert:content && playwright test e2e/clip.spec.ts",
+    "test:e2e": "playwright test",
+    "ci": "npm test && npm run test:int && npm run build && npm run assert:content && npm run test:e2e"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "@types/node": "^22.10.0",
+    "happy-dom": "^15.11.7",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8",
+    "wxt": "^0.19.29"
+  }
+}

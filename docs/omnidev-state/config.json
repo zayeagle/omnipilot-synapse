@@ -4,5 +4,9 @@
   "confirmation_level": "auto",
   "context_mode": "slim",
   "sub_agents": "auto",
-  "platform_override": null
+  "platform_override": null,
+  "board_ui": true,
+  "board_default_mode": "manual",
+  "board_cursor_canvas": true,
+  "board_required_phases": [0, 3]
 }

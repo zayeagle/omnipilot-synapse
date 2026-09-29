@@ -1,0 +1,25 @@
+{
+  "name": "omnipilot-synapse",
+  "private": true,
+  "version": "0.1.0",
+  "description": "OmniPilot Synapse — personal knowledge OS. Browser extension MVP (capture → distill → GitHub).",
+  "scripts": {
+    "postinstall": "npm --prefix apps/extension install && npm --prefix apps/git-bridge install",
+    "dev": "npm --prefix apps/extension run dev",
+    "dev:firefox": "npm --prefix apps/extension run dev:firefox",
+    "build": "npm --prefix apps/extension run build",
+    "build:firefox": "npm --prefix apps/extension run build:firefox",
+    "icons": "npm --prefix apps/extension run icons",
+    "test": "npm --prefix apps/extension run test",
+    "test:int": "npm --prefix apps/extension run test:int",
+    "test:e2e": "npm --prefix apps/extension run test:e2e",
+    "assert:content": "npm --prefix apps/extension run assert:content",
+    "pack": "npm --prefix apps/extension run pack",
+    "ci": "npm --prefix apps/extension run ci",
+    "build:bridge": "npm --prefix apps/git-bridge run build",
+    "test:bridge": "npm --prefix apps/git-bridge test",
+    "test:sys": "npm --prefix apps/git-bridge run test:sys",
+    "pack:bridge": "npm --prefix apps/git-bridge run pack",
+    "ci:all": "npm run ci && npm run test:bridge && npm run test:sys"
+  }
+}

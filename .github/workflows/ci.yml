@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: apps/extension
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/extension/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Integration tests
+        run: npm run test:int
+
+      - name: Build (Chrome MV3)
+        run: npm run build
+
+      - name: Assert content bundle carries no secrets
+        run: npm run assert:content
+
+      - name: Build (Firefox)
+        run: npm run build:firefox
+
+      - name: End-to-end tests
+        # Extension E2E needs a headed browser, so Linux CI runs it under a virtual display.
+        run: |
+          npx playwright install --with-deps chromium
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            xvfb-run --auto-servernum -- npm run test:e2e
+          else
+            npm run test:e2e
+          fi
+        shell: bash
+
+      - name: Upload build output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: extension-build
+          path: apps/extension/.output
+          if-no-files-found: ignore
+          retention-days: 7
+
+  git-bridge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # The workflow default is the extension; this job builds the companion instead.
+    defaults:
+      run:
+        working-directory: apps/git-bridge
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/git-bridge/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Unit tests
+        run: npm test
+
+      - name: System tests
+        # The SYS suite skips itself when git/ssh is unavailable; it never fails silently.
+        run: npm run test:sys
+
+      - name: Build + bundle the companion
+        run: npm run pack -- --skip-test
+
+      - name: Upload companion bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: companion-bundle
+          path: apps/git-bridge/.output
+          if-no-files-found: ignore
+          retention-days: 7

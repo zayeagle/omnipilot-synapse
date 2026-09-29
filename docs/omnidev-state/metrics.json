@@ -1,0 +1,542 @@
+{
+  "schema_version": 1,
+  "requirement_id": "req-2026-07-09-synapse-ext-mvp",
+  "events": [
+    {
+      "type": "requirement_start",
+      "at": "2026-07-09T00:00:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "complexity": "L"
+    },
+    {
+      "type": "interactive_prompt",
+      "at": "2026-07-09T00:00:00+08:00",
+      "method": "dsh_ask",
+      "platform": "dsh",
+      "decision_point": "phase0_complexity",
+      "native_attempted": true,
+      "selected": "autopilot"
+    },
+    {
+      "type": "board_start",
+      "at": "2026-07-09T00:00:00+08:00",
+      "mode": "auto",
+      "skip": []
+    },
+    {
+      "type": "explorer_dispatch",
+      "at": "2026-07-09T00:00:00+08:00",
+      "agent": "reference-scout",
+      "phase": 0
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "blueprint_approach",
+      "picked": "approach_a"
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "assumptions_confirm",
+      "picked": "accept"
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "open_questions",
+      "picked": "accept_defaults"
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "checkpoint",
+      "picked": "next",
+      "from_phase": 1
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 1,
+      "artifact": "01-blueprint.md"
+    },
+    {
+      "type": "spec_mode_resolved",
+      "value": true,
+      "reason": "spec_mode=auto + complexity L"
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 2,
+      "artifacts": [
+        "08-spec.md",
+        "04-design.md",
+        "05-test-plan.md",
+        "02-plan.md"
+      ]
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "phase2_plan_ready",
+      "picked": "next"
+    },
+    {
+      "type": "hard_gate",
+      "decision_point": "pre_dev",
+      "status": "confirmed",
+      "picked": "proceed"
+    },
+    {
+      "type": "sub_agent_dispatch",
+      "phase": 3,
+      "workers": 6,
+      "groups": [
+        "G3",
+        "G4",
+        "G5a",
+        "G6a",
+        "G8"
+      ],
+      "note": "main agent kept G0-G2, G5b, G6b, G7, G9 integration"
+    },
+    {
+      "type": "defect_found",
+      "phase": 3,
+      "source": "TC-F6-I01",
+      "severity": "high",
+      "summary": "vault mode leaked page title via file path + commit message and canonical URL via index.json",
+      "fixed": true
+    },
+    {
+      "type": "defect_found",
+      "phase": 3,
+      "source": "G6 design review",
+      "severity": "medium",
+      "summary": "content-hash dedup collided for empty-bodied captures",
+      "fixed": true
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 3,
+      "artifacts": [
+        "03-progress.md",
+        "07-security-audit.md"
+      ]
+    },
+    {
+      "type": "security_audit",
+      "at": "2026-07-09T00:00:00+08:00",
+      "status": "PASS",
+      "iteration": 1,
+      "blocking_open": 0
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "layer": "unit",
+      "passed": 381,
+      "failed": 0,
+      "files": 30
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "layer": "integration",
+      "passed": 67,
+      "failed": 0,
+      "files": 9
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "layer": "e2e",
+      "status": "blocked",
+      "reason": "environment does not dispatch MV3 service-worker runtime events under Playwright automation",
+      "specs": 4
+    },
+    {
+      "type": "defect_found",
+      "phase": 3,
+      "source": "E2E gate",
+      "severity": "high",
+      "summary": "worker registered browser.commands.onCommand while the manifest declared no commands key -> worker threw during initial evaluation -> extension inert while all unit tests passed",
+      "fixed": true
+    },
+    {
+      "type": "hard_gate",
+      "decision_point": "test_gate_fail",
+      "status": "resolved",
+      "picked": "attempt_env_fix",
+      "outcome": "root cause was an application defect, not the environment; fixed and re-run"
+    },
+    {
+      "type": "build_check",
+      "phase": 3,
+      "build": "pass",
+      "assert_content": "pass",
+      "npm_audit": "0 vulnerabilities"
+    },
+    {
+      "type": "security_audit",
+      "at": "2026-07-09T00:00:00+08:00",
+      "status": "PASS",
+      "iteration": 2,
+      "blocking_open": 0
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 4,
+      "artifact": "05-test-report.md"
+    },
+    {
+      "type": "test_run",
+      "phase": 4,
+      "layer": "unit",
+      "passed": 381,
+      "failed": 0,
+      "files": 30
+    },
+    {
+      "type": "test_run",
+      "phase": 4,
+      "layer": "integration",
+      "passed": 68,
+      "failed": 0,
+      "files": 9
+    },
+    {
+      "type": "test_run",
+      "phase": 4,
+      "layer": "e2e",
+      "passed": 6,
+      "failed": 0,
+      "specs": 4
+    },
+    {
+      "type": "test_run",
+      "phase": 4,
+      "layer": "smoke",
+      "passed": 3,
+      "failed": 0
+    },
+    {
+      "type": "test_run",
+      "phase": 4,
+      "layer": "regression",
+      "passed": 321,
+      "failed": 0,
+      "files": 24,
+      "mode": "targeted"
+    },
+    {
+      "type": "test_gap_backfill",
+      "phase": 4,
+      "gaps": [
+        "G2: TC-F2-I01 not explicitly labelled",
+        "G2: SMK/REG had no runnable commands"
+      ],
+      "status": "resolved"
+    },
+    {
+      "type": "spec_verify",
+      "phase": 4,
+      "scenarios": 21,
+      "covered": 21,
+      "gaps": 0
+    },
+    {
+      "type": "test_complete",
+      "phase": 4,
+      "gate_status": "PASS",
+      "pass_rate": 1
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 5,
+      "artifacts": [
+        "06-release-notes.md",
+        "deploy/deploy.sh",
+        "deploy/pack/deploy.sh",
+        "deploy/README.md"
+      ]
+    },
+    {
+      "type": "deploy",
+      "phase": 5,
+      "deploy_autonomy": "full",
+      "deploy_modes": [
+        "chrome",
+        "firefox",
+        "verify"
+      ],
+      "executed": false,
+      "note": "artifacts packaged and verified; no production publication (maintainer action)"
+    },
+    {
+      "type": "build_check",
+      "phase": 5,
+      "artifacts": [
+        "omnipilotsynapse-extension-0.1.0-chrome.zip",
+        "omnipilotsynapse-extension-0.1.0-firefox.zip",
+        "omnipilotsynapse-extension-0.1.0-sources.zip"
+      ],
+      "dry_run": "validated"
+    },
+    {
+      "type": "phase_complete",
+      "phase": 5,
+      "status": "done"
+    },
+    {
+      "type": "spec_archive",
+      "at": "2026-07-09T00:00:00+08:00",
+      "requirement_id": "req-2026-07-09-synapse-ext-mvp",
+      "merged_into": "docs/omnidev-state/specs.md",
+      "requirements": 8,
+      "scenarios": 21,
+      "snapshot": "docs/omnidev-state/main/08-spec-history.md"
+    },
+    {
+      "type": "requirement_complete",
+      "at": "2026-07-09T00:00:00+08:00",
+      "requirement_id": "req-2026-07-09-synapse-ext-mvp",
+      "phases_done": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "gate_status": "PASS",
+      "tests": 455
+    },
+    {
+      "type": "requirement_start",
+      "at": "2026-07-09T00:00:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "complexity": "L",
+      "requirement_id": "req-2026-07-09-synapse-git-sync",
+      "summary": "GitHub auth modes (token + SSH), default/custom branch, automatic push+pull sync, readable in-repo storage with retrieval",
+      "previous_requirement": "req-2026-07-09-synapse-ext-mvp",
+      "note": "XL if the SSH native-messaging companion is in scope"
+    },
+    {
+      "type": "interactive_prompt",
+      "at": "2026-07-09T00:00:00+08:00",
+      "method": "dsh_ask",
+      "platform": "dsh",
+      "decision_point": "phase0_complexity",
+      "native_attempted": true,
+      "selected": "autopilot"
+    },
+    {
+      "type": "board_start",
+      "at": "2026-07-09T00:00:00+08:00",
+      "mode": "auto",
+      "skip": [],
+      "requirement_id": "req-2026-07-09-synapse-git-sync"
+    },
+    {
+      "type": "artifact_archived",
+      "at": "2026-07-09T00:00:00+08:00",
+      "reason": "new_requirement",
+      "artifacts": [
+        "01-blueprint.md",
+        "02-plan.md",
+        "04-design.md",
+        "05-test-plan.md"
+      ],
+      "method": "byte-exact snapshot into paired *-history.md"
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "blueprint_approach",
+      "picked": "approach_a",
+      "note": "SSH transport: native-messaging companion"
+    },
+    {
+      "type": "scope_escalation",
+      "at": "2026-07-09T00:00:00+08:00",
+      "from": "L",
+      "to": "XL",
+      "reason": "approach A adds a second deliverable (apps/git-bridge companion process)",
+      "user_informed_at": "phase0_complexity",
+      "user_choice": "autopilot (no narrowing)"
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "assumptions_confirm",
+      "picked": "accept"
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "open_questions",
+      "picked": "accept_defaults"
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "checkpoint",
+      "picked": "next",
+      "from_phase": 1
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 1,
+      "artifact": "01-blueprint.md",
+      "version": 2
+    },
+    {
+      "type": "spec_mode_resolved",
+      "value": true,
+      "reason": "spec_mode=auto + complexity L/XL"
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 2,
+      "artifacts": [
+        "08-spec.md",
+        "04-design.md",
+        "05-test-plan.md",
+        "02-plan.md"
+      ],
+      "versions": {
+        "08-spec.md": 2,
+        "04-design.md": 2,
+        "05-test-plan.md": 2,
+        "02-plan.md": 2
+      }
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "phase2_plan_ready",
+      "picked": "next"
+    },
+    {
+      "type": "hard_gate",
+      "decision_point": "pre_dev",
+      "status": "confirmed",
+      "picked": "proceed",
+      "note": "full XL scope confirmed by the user"
+    },
+    {
+      "type": "sub_agent_dispatch",
+      "phase": 3,
+      "requirement_id": "req-2026-07-09-synapse-git-sync",
+      "workers": 3,
+      "note": "1st companion agent ran out of context with no output; re-dispatched narrower and it succeeded"
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "at": "2026-07-09T00:00:00+08:00",
+      "layer": "unit",
+      "pkg": "extension",
+      "passed": 428,
+      "failed": 0,
+      "files": 34,
+      "baseline": 381
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "at": "2026-07-09T00:00:00+08:00",
+      "layer": "integration",
+      "pkg": "extension",
+      "passed": 81,
+      "failed": 0,
+      "files": 10,
+      "baseline": 67
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "at": "2026-07-09T00:00:00+08:00",
+      "layer": "unit",
+      "pkg": "git-bridge",
+      "passed": 11,
+      "failed": 0,
+      "files": 3
+    },
+    {
+      "type": "design_decision",
+      "phase": 3,
+      "id": "ssh-requires-local-clone",
+      "summary": "git needs a working tree, so SshConfig gained repoRoot; SSH mode cannot target a bare remote"
+    },
+    {
+      "type": "design_decision",
+      "phase": 3,
+      "id": "tier-default-split",
+      "summary": "DEFAULT_SECURITY_MODE=transparent (new store) split from SAFE_FALLBACK_MODE=vault (unknown/corrupt fails closed)"
+    },
+    {
+      "type": "process_miss",
+      "phase": 3,
+      "artifact": "03-progress.md",
+      "summary": "overwritten before archiving; 03-progress-history.md records an explicitly-labelled reconstruction",
+      "severity": "low"
+    },
+    {
+      "type": "task_group_complete",
+      "at": "2026-09-29T17:00:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "requirement_id": "req-2026-07-09-synapse-git-sync",
+      "group": "T2.6",
+      "detail": "companion SYS suite (8) over real stdio + bare remote"
+    },
+    {
+      "type": "security_audit",
+      "at": "2026-09-29T17:00:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "requirement_id": "req-2026-07-09-synapse-git-sync",
+      "status": "PASS",
+      "iteration": 1,
+      "blocking_open": 0,
+      "detail": "S4-01 HIGH fixed in-iteration (git.write could install .git hooks / rewrite .git/config)"
+    },
+    {
+      "type": "requirement_start",
+      "at": "2026-09-29T18:00:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "requirement_id": "req-2026-09-29-synapse-workflow-elegance",
+      "complexity": "L"
+    },
+    {
+      "type": "interactive_prompt",
+      "at": "2026-09-29T18:00:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "decision_point": "phase0_complexity",
+      "native_attempted": true,
+      "method": "dsh_ask",
+      "selected": "autopilot"
+    },
+    {
+      "type": "phase_complete",
+      "at": "2026-09-29T18:00:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "phase": 1,
+      "artifact": "01-blueprint.md v3",
+      "approach": "A"
+    },
+    {
+      "type": "phase_complete",
+      "at": "2026-09-29T18:35:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "phase": 2,
+      "artifact": "08-spec v4 / 04-design v4 / 05-test-plan v3 / 02-plan v4",
+      "tasks": 30
+    },
+    {
+      "type": "doc_sync",
+      "at": "2026-09-29T19:05:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "requirement_id": "req-2026-09-29-synapse-workflow-elegance",
+      "detail": "two axes (8 stages x 5 traits); principles doc + AGENTS.md; spec v5 / design v5 / test-plan v4 / plan v5"
+    }
+  ]
+}
