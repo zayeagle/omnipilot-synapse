@@ -19,7 +19,7 @@ import type { CkfRecord } from '../core/ckf';
 import { indexPath } from '../core/paths';
 import type { SecurityMode } from '../messages';
 import type { ContentCodec, IndexItem } from './codec';
-import { NotConfiguredError, NotFoundError, PublicRepoError, ScopeError } from './errors';
+import { CommitTooLargeError, NotConfiguredError, NotFoundError, PublicRepoError, ScopeError } from './errors';
 import {
   findIndexItemByKey,
   indexToFile,
@@ -29,7 +29,17 @@ import {
 } from './tier';
 import type { CommitResult, DirEntry, KnowledgeStore, RepoFile, StoreProbe } from './types';
 
-export const MAX_COMMIT_FILES = 64;
+/**
+ * Upper bound on one commit, as a guard against a pathological fan-out — NOT a design target.
+ *
+ * A capture commits the record, the index AND every search shard its terms touch, and shards are keyed
+ * by a term's first two characters. That is "a handful" for English and several HUNDRED for Chinese,
+ * where nearly every two-character prefix is distinct: at 64 this refused perfectly ordinary captures
+ * with `notConfigured`, which read as "storage is not configured" and sent everyone looking in the
+ * wrong place. The Git Data API takes hundreds of tree entries; the cost of a big commit is time, and
+ * time is the right thing to spend instead of the user's note.
+ */
+export const MAX_COMMIT_FILES = 512;
 
 /** Matches `inbox/…` whether or not a repository prefix precedes it. */
 export const INBOX_SEGMENT = /(?:^|\/)inbox\//u;
@@ -154,7 +164,7 @@ export function createRepoStore(
   const commitFiles = async (files: RepoFile[], message: string): Promise<CommitResult> => {
     if (files.length === 0) throw new NotConfiguredError('storage: refusing an empty commit');
     if (files.length > MAX_COMMIT_FILES) {
-      throw new NotConfiguredError(`storage: refusing a commit with ${files.length} files`);
+      throw new CommitTooLargeError(files.length, MAX_COMMIT_FILES);
     }
     return knowledge.commitFiles(files, message);
   };

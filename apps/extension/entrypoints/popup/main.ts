@@ -48,7 +48,7 @@ import {
   type InboxRow,
   type SearchResultRow,
 } from '../../lib/ui/format';
-import { errorGuidance } from '../../lib/status';
+import { canReadRepository, errorGuidance } from '../../lib/status';
 import {
   cardPatchFor,
   decisionResult,
@@ -60,7 +60,7 @@ import {
 import { dueRows } from './due';
 
 const LANG: Lang = detectLang(typeof navigator === 'undefined' ? null : navigator.language);
-const INBOX_LIMIT = 5;
+const INBOX_LIMIT = 3;
 
 const STATUS_ROWS: ReadonlyArray<{ key: keyof StatusLine; labelKey: string }> = [
   { key: 'store', labelKey: 'status.store' },
@@ -105,6 +105,53 @@ async function openExternal(href: string): Promise<void> {
 
 /* ---------------------------------- the page ------------------------------- */
 
+/**
+ * Icons, drawn inline: no asset, no dependency, and the stroke follows the button colour. One shell, so
+ * another icon costs three lines instead of a dozen attribute setters.
+ */
+function svgIcon(children: SVGElement[]): SVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '18');
+  svg.setAttribute('height', '18');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '1.8');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.append(...children);
+  return svg;
+}
+
+/** The gear: Settings. */
+function gearIcon(): SVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const circle = document.createElementNS(NS, 'circle');
+  circle.setAttribute('cx', '12');
+  circle.setAttribute('cy', '12');
+  circle.setAttribute('r', '3');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', 'M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z');
+  return svgIcon([circle, path]);
+}
+
+/** The pop-out: the same console in a real, draggable window. */
+function popoutIcon(): SVGElement {
+  const NS = 'http://www.w3.org/2000/svg';
+  const box = document.createElementNS(NS, 'path');
+  box.setAttribute('d', 'M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6');
+  const corner = document.createElementNS(NS, 'polyline');
+  corner.setAttribute('points', '15 3 21 3 21 9');
+  const arrow = document.createElementNS(NS, 'line');
+  arrow.setAttribute('x1', '10');
+  arrow.setAttribute('y1', '14');
+  arrow.setAttribute('x2', '21');
+  arrow.setAttribute('y2', '3');
+  return svgIcon([box, corner, arrow]);
+}
+
 function main(): void {
   document.title = t('app.name', null, LANG);
   const app = document.getElementById('app');
@@ -112,10 +159,29 @@ function main(): void {
 
   /* header */
   const header = el('header');
-  header.append(
+  const headerText = el('div', 'header-text');
+  headerText.append(
     el('h1', undefined, t('app.name', null, LANG)),
     el('p', 'tagline', t('app.tagline', null, LANG)),
   );
+  // Settings belongs in the corner people look for it, as an icon: it is a destination, not an action.
+  const settingsButton = button('', 'icon');
+  settingsButton.setAttribute('aria-label', t('popup.openOptions', null, LANG));
+  settingsButton.title = t('popup.openOptions', null, LANG);
+  settingsButton.appendChild(gearIcon());
+  const WINDOW_MODE = new URLSearchParams(location.search).get('mode') === 'window';
+  if (WINDOW_MODE) document.body.dataset['mode'] = 'window';
+
+  // Both destinations sit in the corner people look for them, at the same weight: window, then settings.
+  // The window action hides itself inside the window it would open.
+  const detachButton = button('', 'icon');
+  detachButton.setAttribute('aria-label', t('popup.detach', null, LANG));
+  detachButton.title = t('popup.detach', null, LANG);
+  detachButton.appendChild(popoutIcon());
+  detachButton.addEventListener('click', () => void openFloatingWindow());
+  detachButton.hidden = WINDOW_MODE;
+
+  header.append(headerText, el('span', 'spacer'), detachButton, settingsButton);
 
   /* master switch */
   const switchLabel = el('label', 'switch');
@@ -135,6 +201,9 @@ function main(): void {
   /* readiness notice */
   const notice = el('p', 'notice');
   notice.dataset['kind'] = 'blocked';
+  /** Shown INSTEAD of the data sections while they cannot be read: one line, one action. */
+  const blockedHint = el('p', 'hint', t('popup.blockedHint', null, LANG));
+  blockedHint.hidden = true;
 
   /* status rows */
   const statusList = el('dl', 'status');
@@ -144,6 +213,10 @@ function main(): void {
     statusValues.set(row.key, value);
     statusList.append(el('dt', undefined, t(row.labelKey, null, LANG)), value);
   }
+  // Reference material, not the answer to "can I clip?": the rows are one tap away, and the line that
+  // matters (readiness + sync) stays visible.
+  const statusDetails = el('details', 'more');
+  statusDetails.append(el('summary', undefined, t('popup.details', null, LANG)), statusList);
 
   /* sync row: the outcome plus the two counts the public projection carries (no content) */
   const syncOutcomeText = el('span', 'badge', t('options.sync.outcome.never', null, LANG));
@@ -198,16 +271,59 @@ function main(): void {
   pendingSection.append(
     el('h2', undefined, t('popup.pending', null, LANG)),
     pendingList,
-    dueTitle,
-    dueList,
     pendingResult,
     pendingHint,
   );
+  // The review queue is its own pane: it used to share a scroll with the proposals and the Inbox.
+  const dueSection = el('section');
+  dueSection.append(dueTitle, dueList);
 
-  /* footer */
-  const settingsButton = button(t('popup.openOptions', null, LANG));
-  const footer = el('div', 'row');
-  footer.append(settingsButton);
+  /*
+   * 收件箱 / 待处理 / 复习 as tabs. They are three different questions ("what did I save?", "what does the
+   * AI propose?", "what is due?") that were stacked in one scroll and competed for attention.
+   */
+  const listTabBar = el('nav', 'tabs list-tabs');
+  const listPanes: Array<{ id: string; button: HTMLButtonElement; nodes: HTMLElement[] }> = [];
+
+  function selectListTab(id: string): void {
+    for (const pane of listPanes) {
+      const on = pane.id === id;
+      pane.button.setAttribute('aria-selected', on ? 'true' : 'false');
+      for (const node of pane.nodes) node.hidden = !on;
+    }
+  }
+
+  function addListTab(id: string, labelKey: string, nodes: HTMLElement[]): void {
+    const tab = button(t(labelKey, null, LANG));
+    tab.setAttribute('role', 'tab');
+    tab.setAttribute('aria-selected', 'false');
+    tab.addEventListener('click', () => selectListTab(id));
+    listTabBar.appendChild(tab);
+    listPanes.push({ id, button: tab, nodes });
+  }
+
+  addListTab('inbox', 'popup.inbox', [inboxSection]);
+  addListTab('pending', 'popup.pending', [pendingSection]);
+  addListTab('review', 'popup.tab.review', [dueSection]);
+  selectListTab('inbox');
+
+  /*
+   * 浮动窗口: a toolbar popup cannot be dragged — it is anchored to the toolbar button and closes the
+   * moment focus leaves. A real window can be moved, and it stays until its own close button is used,
+   * which is the behaviour asked for. The same page renders in both, so there is one console, not two.
+   */
+  async function openFloatingWindow(): Promise<void> {
+    await browser.windows.create({
+      url: browser.runtime.getURL('/popup.html?mode=window'),
+      type: 'popup',
+      width: 460,
+      height: 720,
+    });
+    // The toolbar popup has handed over; leaving it open would show two consoles at once.
+    window.close();
+  }
+
+
 
   /* toast */
   const toastRoot = toastArea();
@@ -218,12 +334,14 @@ function main(): void {
     switchRow,
     actions,
     notice,
-    statusList,
+    blockedHint,
+    statusDetails,
     syncRow,
     searchSection,
+    listTabBar,
     inboxSection,
     pendingSection,
-    footer,
+    dueSection,
     toastRoot,
   );
 
@@ -285,6 +403,11 @@ function main(): void {
     syncOutcomeText.textContent = t('options.sync.outcome.never', null, LANG);
     syncOutcomeText.dataset['kind'] = 'unknown';
     syncCountsText.textContent = '';
+    // Nothing can be read while the status call itself fails, so the sections go with it.
+    searchSection.hidden = true;
+    inboxSection.hidden = true;
+    pendingSection.hidden = true;
+    blockedHint.hidden = false;
     setBusy(busy);
   }
 
@@ -307,6 +430,13 @@ function main(): void {
 
     canClip = panel.canClip;
     canSync = panel.canSync;
+    // A blocked surface must not stack dead ends: the Inbox, the proposals and the review queue all read
+    // the repository, so they follow the state they depend on instead of each reporting its own failure.
+    const readable = canReadRepository(status.prefs);
+    searchSection.hidden = !readable;
+    inboxSection.hidden = !readable;
+    pendingSection.hidden = !readable;
+    blockedHint.hidden = readable;
     renderSyncPanel();
     notice.dataset['kind'] = panel.canClip ? 'ok' : 'blocked';
     if (panel.canClip) {

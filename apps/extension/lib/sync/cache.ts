@@ -17,26 +17,45 @@ import type { CkfRecord } from '../core/ckf';
 import type { ErrorCode } from '../messages';
 import type { PublicSyncOutcome } from '../public-prefs';
 
-export interface CachedRecord {
+import type { Sealer } from '../security/sealer';
+
+/** Fields every cached entry has, stored or usable. */
+interface CachedBase {
   path: string;
   /** Blob sha (REST) or commit hash context (companion) — used to skip unchanged files on a pull. */
   sha: string;
   kind: CkfRecord['kind'];
   id: string;
   updatedAt: string;
-  /** The decoded record. Cached so retrieval never touches the network. */
-  record: CkfRecord;
   /**
    * The remote manifest's `content_key` for this path, when one was recorded.
    *
-   * Without this a pulled record could never be recognised as unchanged: the manifest identifies a
-   * version by `content_key`, while `updatedAt` here is the moment it landed in the cache. Storing the
-   * remote's own key is what makes the second sync a no-op (SC-F5-01) instead of re-fetching the world.
+   * Without it a pulled record could never be recognised as unchanged: the manifest identifies a version
+   * by `content_key`, while `updatedAt` here is the moment it landed in the cache. Keeping the remote's
+   * own key is what makes the second sync a no-op (SC-F5-01) instead of re-fetching the world.
    */
   contentKey?: string;
   /** The remote manifest's `updated_at`, kept for the fallback comparison when no key exists. */
   remoteUpdatedAt?: string;
 }
+
+/**
+ * A cached record as a caller sees it: the body is always readable.
+ *
+ * `StoredRecord` is what the backend actually holds when a sealer is configured — the same metadata with
+ * the body replaced by ciphertext — so sealing stays an implementation detail of storage and no caller
+ * has to handle a bodyless entry.
+ */
+export interface CachedRecord extends CachedBase {
+  record: CkfRecord;
+}
+
+export interface SealedCachedRecord extends CachedBase {
+  sealed: string;
+}
+
+export type StoredRecord = CachedRecord | SealedCachedRecord;
+
 
 export interface SyncState {
   head: string | null;
@@ -75,10 +94,10 @@ export const EMPTY_SYNC_STATE: SyncState = {
 };
 
 export interface CacheBackend {
-  getRecord(path: string): Promise<CachedRecord | null>;
-  putRecord(record: CachedRecord): Promise<void>;
+  getRecord(path: string): Promise<StoredRecord | null>;
+  putRecord(record: StoredRecord): Promise<void>;
   deleteRecord(path: string): Promise<void>;
-  listRecords(): Promise<CachedRecord[]>;
+  listRecords(): Promise<StoredRecord[]>;
   clearRecords(): Promise<void>;
 
   readState(): Promise<SyncState>;
@@ -92,28 +111,36 @@ export interface CacheBackend {
 }
 
 /** Strip anything that is not part of the cached shape — defensive against an older/foreign entry. */
-export function normalizeCachedRecord(value: unknown): CachedRecord | null {
+export function normalizeCachedRecord(value: unknown): StoredRecord | null {
   if (typeof value !== 'object' || value === null) return null;
   const raw = value as Record<string, unknown>;
   const path = raw['path'];
   const sha = raw['sha'];
   const record = raw['record'];
+  const sealed = raw['sealed'];
   if (typeof path !== 'string' || path.length === 0) return null;
   if (typeof sha !== 'string') return null;
-  if (typeof record !== 'object' || record === null) return null;
-  const kind = (record as { kind?: unknown }).kind;
-  const id = (record as { id?: unknown }).id;
+  if (typeof record !== 'object' || record === null) {
+    // A sealed entry carries no readable record, so its identity comes from the entry's own fields.
+    if (typeof sealed !== 'string' || sealed.length === 0) return null;
+  }
+  const asRecord = typeof record === 'object' && record !== null ? (record as Record<string, unknown>) : null;
+  const kind = asRecord ? asRecord['kind'] : raw['kind'];
+  const id = asRecord ? asRecord['id'] : raw['id'];
   if (typeof kind !== 'string' || typeof id !== 'string') return null;
+  // The guard above proved exactly one arm is present. A union type cannot express that, so the assembly
+  // is asserted once, here, rather than making every caller narrow before it can read a record.
   return {
     path,
     sha,
     kind: kind as CkfRecord['kind'],
     id,
     updatedAt: typeof raw['updatedAt'] === 'string' ? raw['updatedAt'] : new Date(0).toISOString(),
-    record: record as CkfRecord,
+    ...(asRecord ? { record: asRecord as unknown as CkfRecord } : {}),
+    ...(typeof sealed === 'string' ? { sealed } : {}),
     ...(typeof raw['contentKey'] === 'string' ? { contentKey: raw['contentKey'] } : {}),
     ...(typeof raw['remoteUpdatedAt'] === 'string' ? { remoteUpdatedAt: raw['remoteUpdatedAt'] } : {}),
-  };
+  } as StoredRecord;
 }
 
 /** Only string→string pairs survive: a foreign or half-written entry must not become a path we later commit to. */
@@ -160,10 +187,38 @@ export function normalizeSyncState(value: unknown): SyncState {
 
 /** The cache the engine talks to. Deliberately thin: it validates, then delegates. */
 export class SyncCache {
-  constructor(private readonly backend: CacheBackend) {}
+  constructor(
+    private readonly backend: CacheBackend,
+    /** Seals record bodies at rest; absent in tests and in a profile with no configured vault. */
+    private readonly sealer?: Sealer,
+  ) {}
+
+  /** The form that goes to the backend: the record sealed when a sealer is present. */
+  private async stored(entry: CachedRecord): Promise<StoredRecord> {
+    if (!this.sealer) return entry;
+    const sealed = await this.sealer.seal(JSON.stringify(entry.record));
+    const rest: CachedRecord = { ...entry };
+    delete (rest as { record?: CkfRecord }).record;
+    return { ...rest, sealed };
+  }
+
+  /** The usable form, or null when a sealed body cannot be opened right now (the vault is locked). */
+  private async opened(entry: StoredRecord | null): Promise<CachedRecord | null> {
+    if (!entry) return null;
+    if ('record' in entry) return entry;
+    if (!this.sealer) return null;
+    try {
+      const record = JSON.parse(await this.sealer.open(entry.sealed)) as CkfRecord;
+      const rest: SealedCachedRecord = { ...entry };
+      delete (rest as { sealed?: string }).sealed;
+      return { ...rest, record };
+    } catch {
+      return null;
+    }
+  }
 
   async get(path: string): Promise<CachedRecord | null> {
-    return this.backend.getRecord(path);
+    return this.opened(await this.backend.getRecord(path));
   }
 
   async put(
@@ -187,7 +242,7 @@ export class SyncCache {
       ...(options.contentKey !== undefined ? { contentKey: options.contentKey } : {}),
       ...(options.remoteUpdatedAt !== undefined ? { remoteUpdatedAt: options.remoteUpdatedAt } : {}),
     };
-    await this.backend.putRecord(entry);
+    await this.backend.putRecord(await this.stored(entry));
     if (options.markDirty === true) await this.backend.markDirty(options.path);
     return entry;
   }
@@ -197,7 +252,14 @@ export class SyncCache {
   }
 
   async all(): Promise<CachedRecord[]> {
-    return this.backend.listRecords();
+    const out: CachedRecord[] = [];
+    for (const row of await this.backend.listRecords()) {
+      const opened = await this.opened(row);
+      // Unreadable-while-locked entries are skipped, never returned half-formed: every caller reads
+      // `entry.record` without checking, so a bodyless entry would be a crash rather than a miss.
+      if (opened) out.push(opened);
+    }
+    return out;
   }
 
   /** Drop the whole cache. Safe: everything is rebuildable from the repository (SC-F6-03). */
@@ -227,7 +289,7 @@ export class SyncCache {
 
 /** In-memory backend: tests, and the fallback when IndexedDB is unavailable. */
 export function createMemoryBackend(): CacheBackend {
-  const records = new Map<string, CachedRecord>();
+  const records = new Map<string, StoredRecord>();
   const dirty = new Set<string>();
   let state: SyncState = { ...EMPTY_SYNC_STATE };
 

@@ -4,7 +4,7 @@ import { newSourceItem, newKnowledgeCard } from '../core/ckf';
 import { indexPath } from '../core/paths';
 import { PublicRepoError, ScopeError } from './errors';
 import { transparentCodec } from './codec';
-import { GitHubStore, defaultCommitMessage } from './github-store';
+import { GitHubStore, MAX_COMMIT_FILES, defaultCommitMessage } from './github-store';
 import type { GithubApi } from './github-api';
 import type { CommitResult, RepoFile, StoreProbe } from './types';
 import { emptyIndex, mergeIndex, indexToFile } from './tier';
@@ -147,11 +147,14 @@ describe('atomic record commit (F6 UNIT)', () => {
   it('TC-F6-U02 refuses an empty or oversized commit', async () => {
     const store = makeStore(fakeApi());
     await expect(store.commitFiles([], 'nothing')).rejects.toThrow(/empty commit/u);
-    const many: RepoFile[] = Array.from({ length: 65 }, (_, index) => ({
+    // Derived from the constant, so the bound can move without the test quietly testing nothing.
+    const many: RepoFile[] = Array.from({ length: MAX_COMMIT_FILES + 1 }, (_, index) => ({
       path: `x/${index}.md`,
       content: 'x',
     }));
-    await expect(store.commitFiles(many, 'too many')).rejects.toThrow(/65 files/u);
+    await expect(store.commitFiles(many, 'too many')).rejects.toThrow(
+      new RegExp(`${MAX_COMMIT_FILES + 1} files`, 'u'),
+    );
   });
 
   it('TC-F6-U01 builds a readable default commit message per kind', () => {

@@ -40,12 +40,20 @@ export function createToast(options: ToastOptions): Toast {
   root.hidden = true;
 
   let handle: unknown = null;
+  /*
+   * Real timers unless a test injects fakes. The injected pair used to BE the mechanism, which meant the
+   * toast only ever auto-dismissed under test: in production it stayed on the page for good, covering
+   * the content the user was reading. A seam decides nothing on its own.
+   */
+  const schedule =
+    setTimeoutImpl ?? ((handler: () => void, ms: number) => globalThis.setTimeout(handler, ms));
+  const cancel = clearTimeoutImpl ?? ((value: unknown) => globalThis.clearTimeout(value as number));
 
   function hide(): void {
     root.hidden = true;
     root.textContent = '';
-    if (handle !== null && clearTimeoutImpl) {
-      clearTimeoutImpl(handle);
+    if (handle !== null) {
+      cancel(handle);
       handle = null;
     }
   }
@@ -66,10 +74,12 @@ export function createToast(options: ToastOptions): Toast {
     }
     root.hidden = false;
     const timeout = kind === 'error' ? TOAST_ERROR_VISIBLE_MS : TOAST_VISIBLE_MS;
-    if (setTimeoutImpl) {
-      handle = setTimeoutImpl(() => hide(), timeout);
-    }
+    handle = schedule(() => hide(), timeout);
   }
+
+  // Clicking it dismisses early: an error the user has already read should not have to be waited out.
+  // Bound once, not per `show`, so repeated messages cannot pile up listeners.
+  root.addEventListener('click', () => hide());
 
   (doc.body ?? doc.documentElement).appendChild(root);
 

@@ -422,9 +422,30 @@ export class SettingsStore {
     };
   }
 
-  /** Create or replace the vault. Adopts the derived key so the session starts unlocked. */
-  async setupVault(passphrase: string, secrets: Partial<SecretPayload> = {}): Promise<void> {
-    const payload: SecretPayload = { ...EMPTY_SECRETS, ...secrets };
+  /**
+   * Create the vault, or re-key an existing one. Adopts the derived key so the session starts unlocked.
+   *
+   * Re-keying is the one irreversible thing this file does: the new envelope REPLACES the old one, so
+   * every secret the caller does not pass is gone for good. Two rules stop that from happening by
+   * accident — the readable secrets are carried forward, and when they cannot be read (the vault is
+   * locked) the call is refused rather than allowed to destroy what it cannot see. An irreversible
+   * action has to be asked for, not fallen into.
+   */
+  async setupVault(
+    passphrase: string,
+    secrets: Partial<SecretPayload> = {},
+    options: { replaceSecrets?: boolean } = {},
+  ): Promise<void> {
+    let carried: Partial<SecretPayload> = {};
+    if (await this.getEnvelope()) {
+      const readable = await this.peekSecrets();
+      if (readable) {
+        carried = readable;
+      } else if (options.replaceSecrets !== true) {
+        throw new VaultLockedError('vault: unlock first — re-keying a locked vault would discard the stored secrets');
+      }
+    }
+    const payload: SecretPayload = { ...EMPTY_SECRETS, ...carried, ...secrets };
     const envelope = await createEnvelope(passphrase, JSON.stringify(payload), {
       crypto: this.cryptoProvider,
       iterations: this.iterations,

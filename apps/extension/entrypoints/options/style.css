@@ -108,6 +108,33 @@ section.card[hidden] {
   font-size: 15px;
 }
 
+/* 高级: one collapsed row per tab, so the default view stays short. */
+details.advanced {
+  margin-top: 4px;
+  border-top: 1px solid var(--op-line);
+  padding-top: 6px;
+}
+
+details.advanced > summary {
+  cursor: pointer;
+  color: var(--op-muted);
+  font-weight: 600;
+  padding: 4px 0;
+  list-style: none;
+}
+
+details.advanced > summary::before {
+  content: '\25B8  ';
+}
+
+details.advanced[open] > summary::before {
+  content: '\25BE  ';
+}
+
+details.advanced[open] > summary {
+  margin-bottom: 6px;
+}
+
 .card-body {
   display: flex;
   flex-direction: column;

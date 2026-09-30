@@ -919,6 +919,113 @@ token 存在 **vault** 里，所以保险库锁着时 `toPublicPrefs` 会把 `ha
 3. **收件箱不再说谎**：`inbox.list` 读取失败时，列表原本显示「收件箱是空的」（与「读不到」是两件事），改为「收件箱暂时读不到」。
 
 **断言的修正（A6）**：`status.test.ts` 里那条 `透明模式 + vaultLocked → ready` 的期望**编码了这个 bug**，已改为 `vault-locked` 并注明理由；新增 TC-F8-U06（SSH + 无 PAT + 无伴生进程 → `companion-missing`；伴生进程 ok → `ready`；vault 档位 + 锁定 → `vault-locked`）。
+### 反馈修复：popup 限流 + 两个持久化缺口（2026-09-30）
+
+**限流分桶改对了**（用户报「请求过于频繁，请稍后重试」）：`limiterKeyFor` 原来把**所有未列出的类型**都算进最紧的 `vault` 预算（12 次/分钟），于是 popup 一次打开（status + inbox + cards + review + sync ≈ 6 个请求）就吃掉一半；而**真实 popup 没有 tab id**，`bucketKey` 退化成 `internal`，整个 profile 共用一个桶。现在按**请求碰到什么**分桶：凭据/保险库类（`settings.*` / `vault.*`）留在最紧的 `vault`，其余走 `github`（60 次/分钟/键）。
+
+**① 锁定后本机仍有明文正文 → 已修**：同步缓存里的记录体改为**用会话密钥封口**后落盘（新增 `lib/security/sealer.ts`，`SyncCache` 接一个可选 sealer）。锁定时 `requireKey` 抛错，条目**读不出但也不丢**（仍在本机，解锁即恢复）——这是「锁定」与「丢失」的区别。类型上把**存储形态**与**可用形态**分开（`StoredRecord = CachedRecord | SealedCachedRecord`），于是封口只是存储的实现细节，所有调用方仍然拿到 `record` 必有值的条目。
+
+**② 离线队列明文存正文 → 已修**：`CaptureQueue` 入队时封口 payload（同一套 `QueuedCapture` / `StoredQueuedCapture` 拆分）。读不出的条目留在磁盘上；`size()` 改为数**原始条目**，锁定时不会把「有 N 条待补写」显示成空队列。
+
+**测试**：新增 `lib/sync/cache-sealed.test.ts` 两条（封口后落盘不含正文 / 锁定时读不出但仍在 / 解锁后恢复）。
+
+**配置瘦身（同一轮完成）**：
+
+- **SSH 的 host / user / keyRef 默认隐藏**，只在**存过非默认值**时才出现（`sshCustom`），并用一句提示说明默认值（`github.com · git · default`）—— 隐藏用户真正设过的值是最糟的折中，所以用「改过才显示」而不是「一律隐藏」。SSH 区块因此只剩**本地克隆路径 + 克隆命令 + 测试连接**。
+- **同步策略**（间隔 / 启动时 / 捕获后 / 仅拉取）收进「高级」折叠：同步页签默认只剩 状态 + 冲突决策 + 检索，保存按钮仍在 footer，折叠时也能保存。
+- 两个折叠都用同一个 `details.advanced` 样式（此前存储页的高级区**没有样式**，看起来像一堵墙 —— 这次补上）。模型页的 baseUrl 标签本来就写着「（高级）」，未再另做折叠。
+
+**popup 精简 + 样式（同一轮完成）**：
+
+- 7 行状态明细收进 `details.more`「详情」（默认折叠，内容仍在 DOM，所以文本级断言与 E2E 不受影响）；popup 默认只回答两个问题：**现在能不能剪藏** 与 **是否在同步**。收件箱上限 5 → 3。
+- 节奏与样式：整体间距 10 → 8px、内边距收紧，新增 `details.more` 的折叠行样式（带 ▸/▾ 指示），与 options 的 `details.advanced` 同构。
+
+- **状态驱动（第二轮反馈「这一部分好丑」的真正修法）**：新增 `canReadRepository(prefs)`（`lib/status.ts`）—— 读仓库只需要凭据，而 token 模式的凭据在保险库里，所以**锁定时收件箱 / 提案 / 复习队列一起读不到**。popup 现在按这个谓词隐藏这三个区，只留**一行**「解锁后这里会显示…」，而不是三行「读不到」+ 一行红字叠在一起。
+  这条谓词与 `captureReadiness` 分开：捕获还多两道门（探测、公开仓库确认），用捕获的状态去决定「能不能读」会把公开仓库的用户关在门外。
+- **样式第二轮**：区块改为真正的块（`section` 加分隔与间距、`h2` 降到 11px 去大写），检索输入框补上 `input.control`（此前**完全没有样式**，所以和旁边的按钮不一致），失败行从裸红字改为带边框的 chip（`.hint[data-kind='error']`），空/不可读行改为左对齐小字。
+
+**验证（本轮最终）**：extension tsc 0 · UNIT **612 / 55**（新增 TC-F8-U07 覆盖读能力谓词）· INT **120** · E2E **19 / 19** · build 0（407.9 kB）· `assert:content` OK。基线 UNIT → **612**。
+### 报障续修 2：in-page toast 永不消失 + 提交上限拒绝中文内容（2026-09-30）
+
+**① toast 不自动关闭（真 bug，测试接缝反噬）**：`lib/dom/toast.ts` 的自动隐藏写成 `if (setTimeoutImpl) { handle = setTimeoutImpl(...) }` —— 注入的假计时器**就是**机制本身，生产环境从不注入，于是内容脚本的 toast **永久留在页面上**（覆盖用户正在读的内容）。popup/options 用的是另一套实现（真 `setTimeout`），所以只有网页里那个卡住。
+修：真实计时器为默认（注入只作测试接缝）、错误 7s / 普通 4s 自动消失、**点击即关闭**（监听只绑一次，避免重复消息堆积监听）。新增 `lib/dom/toast-dismiss.test.ts` 两条（无注入计时器也会自动消失 / 点击立即关闭并清空文本）——第一条正是原 bug 的钉子。
+
+**② 中文内容被提交上限拒绝（很可能是「配置好了却报未配置」的真凶）**：`MAX_COMMIT_FILES = 64`，而一次捕获的提交要带**记录 + 索引 + 该内容命中的所有搜索分片**，分片按词的前两个字符切分 —— 英文是「少数几个」，**中文几乎是每个二字前缀都不同**，一篇中文文章就能命中几百个 → 合法提交被拒，且抛的是 `NotConfiguredError`，文案变成「存储配置不完整」。上限提到 **512**（GitHub 的 tree 接口能吃下几百项；代价是时间，时间比用户的笔记便宜）。
+
+**③ E2E 移出自动门禁（用户要求）**：`ci.yml` 的 `e2e` job 加 `if: github.event_name == 'workflow_dispatch'` —— 只在 Actions 手动触发时运行；本地 `npm run test:e2e` 照旧。**specs 一个没删**，E2E ≥19 的基线仍然成立。
+
+**验证**：tsc 0 · UNIT **614 / 56** · INT **120** · build 0（411.4 kB）· `assert:content` OK。本轮按用户要求**未运行 E2E**。基线 UNIT → **614**。
+### popup 交互：浮动窗口 + 列表页签（2026-09-30）
+
+**① 浮动窗口（用户要「可拖动、拖后只能手动关闭」）**：toolbar 弹窗在技术上**无法拖动**（锚定在工具栏按钮上、失焦即关），所以真正的实现是把同一个页面开成**独立窗口**：`browser.windows.create({ url: '/popup.html?mode=window', type: 'popup' })` —— 窗口可拖动、只有自己的关闭按钮能收掉，正是要的行为。弹窗底部新增「浮动窗口」按钮，打开后工具栏弹窗自行 `window.close()`（否则会同时存在两个控制台）；窗口模式下按钮隐藏、布局自适应（`body[data-mode='window']`）。
+
+**② 收件箱 / 待处理 / 复习 改为页签**：三者是三个不同的问题（我存了什么 / AI 提议什么 / 该复习什么），原来挤在同一个滚动里互相抢注意力。现在一次一个面板。
+
+**③ 随之更新两个 E2E spec**（`cards.spec.ts` / `review-journey.spec.ts`：先点「待处理」页签再断言，否则 `click()`/`toBeVisible()` 作用在隐藏面板上）。**并本地跑了一次 E2E：19 / 19 通过** —— 虽然它已从 CI 自动门禁移出，但不留坏测试在仓库里。
+
+**待核实（下一轮）**：用户 popup 的收件箱里那条记录路径显示为 `inbox/2026/09/inbox/深入浅出…`，**多了一层 `inbox/`**。可能是显示拼接问题，也可能是真实路径重复 —— 需要看 `.omnipilot/config.json` 的 `path_prefix` 与该记录的 index 条目。
+
+**验证**：tsc 0 · UNIT **614 / 56** · INT **120** · E2E **19 / 19**（本地单跑）· build 0（412.9 kB）。
+### 设置改为右上角图标 + `commitTooLarge` 专用码（2026-09-30）
+
+**① 设置按钮移到 header 右上角，绘制为齿轮图标**：`button.icon` + 内联 SVG（`gearIcon()`，无资源文件、无依赖，`stroke: currentColor` 继承颜色），`aria-label`/`title` 为「设置」，带 hover 边框态。footer 只剩「浮动窗口」。
+随之更新 `render.test.ts`：图标按钮的文本为空，断言改查 `aria-label` 而不是 `button.textContent`（这正是「按钮变成图标」这件事的可判定形式）。
+
+**② 补上漏掉的 import（我上一轮引入的 tsc 红）**：`github-store.ts` 用了 `CommitTooLargeError` 却没导入 → `TS2304` + 1 条 UNIT 失败。已修，现已全绿。**教训**：上一轮的验证输出里 TSC=2 就在眼前，我不该只看后半段的测试汇总。
+
+**③ `commitTooLarge` 专用码（上一条报错的根治）**：一次提交的文件数超限原本抛 `NotConfiguredError`，于是**配置完好**的仓库报「存储配置不完整」。现在 `CommitTooLargeError` 带自己的码与文件数/上限，界面文案改为「这条内容需要的文件数超过单次提交上限 —— 搜索分片数量超了」，动作是「改成剪藏更小的一段，或到设置里重建检索索引」。**这正是「提炼」报错的成因**（一次提交 = 记录 + 索引 + 该内容命中的所有分片），上限已提至 512，但那只在重新加载扩展后生效。
+
+**验证（本轮按用户要求不跑 E2E）**：tsc 0 · UNIT **614 / 56** · INT **120 / 13** · build 0（416.2 kB）· `assert:content` OK。
+
+**补**：浮动窗口按钮**也**移到 header 右上角（与齿轮并排，同一个 `button.icon` 样式与 `svgIcon` 外壳：新增 `popoutIcon()`「弹出窗口」图形）。footer 因此为空，已删除。图标在窗口模式下自我隐藏（`WINDOW_MODE` 提前到 header 计算），避免在窗口里再开窗口。
+
+**右上角两个图标落位时连着踩了两个 CSS 陷阱（记在这里，别再犯）**：
+
+1. 占位元素的弹性只写在 .row .spacer 下，而图标放进了 header，于是占位不撑开、图标贴着标题。改为不依赖父类的 .spacer 规则。
+2. hidden 被作者样式盖掉（第二次）：给图标按钮加了 display，于是按钮的 hidden 静默失效，已经在浮动窗口里还显示浮动按钮。上一轮为 section 补的兜底规则特异性不够，这次改成语义重置并用 important 固定。已在构建产物里核实该规则确实打进了 .output。
+
+**教训**：只要给某类元素加了 display，就必须同时确认 hidden 仍然有效。这类回归不报错、测试全绿（断言看 textContent，hidden 只影响渲染），本项目已因此栽三次。
+
+### 用户报障：勾选与 Token 在重载后回退（数据安全修复，2026-09-30）
+
+**查到一条会静默毁数据的路径（已修）**：settings-store 的 setupVault 注释原文就是 Create or replace the vault，它用一个新的信封覆盖旧信封，而调用方（vault.setup 处理器）只带本次表单里输入的 secret。于是只要在安全页再提交一次口令，信封里原有的 GitHub Token 就被空值覆盖，且旧密文不可恢复。这违反了本项目自己的硬约束：可逆 / 不删除用户数据 / 不可逆动作默认不执行并显式说明。
+
+修法（settings-store.ts）：重设口令时先把能读到的密钥带过去（解锁状态下合并，而不是清零）；读不到时（保险库锁定）直接抛 VaultLockedError 拒绝执行，要求先解锁。于是常见路径（解锁后改口令）Token 存活，危险路径（锁定时重设）被明确拒绝而不是默默销毁。
+
+**另发现一个交互死循环（待修）**：模型页的 input/change 监听器直接调用 renderProvider()，而它把表单从已保存的 settings 重建 —— 所以刚勾上的信任勾选会被立刻还原成未勾选（保存又被拦），用户看到的是勾了又还原、无从下手。修法需要先读 syncForm/renderProvider 的语义（切换 provider 时确实要清空自定义 URL 与勾选），避免把那个刻意的重置改坏。
+
+**验证**：tsc 0 · UNIT 614 · INT 120。
+
+### 用户报障：剪藏提示「请先配置 GitHub 存储」（两道问题叠在一起）
+
+**① 本轮自己引入的 CSS 回归**：为 popup 加的 `section { display: flex }` 是**作者样式**，它盖掉了浏览器内置的 `[hidden] { display: none }` —— 于是 `section.hidden = true` **静默失效**，「一行说明」与三个空区块同时出现。已补 `section[hidden], [hidden] { display: none }` 并写明原因（`hidden` 是 popup 隐藏不可读区块的机制，不能被自己的 `display` 悄悄废掉）。
+
+**教训（值得携带）**：给元素加 `display` 时，必须同时确认 `hidden` 仍然有效 —— 这类回归**不会报错、测试也全绿**（DOM 断言看的是 `textContent`，而 `hidden` 只影响渲染）。这是本项目第三次遇到同一类问题：**能被断言的东西被断言了，渲染出来的东西没人看**。
+
+**② 真正的原因**：`notConfigured` 不是「没配仓库」（仓库地址正常、详情行可见），而是 **Token 没存进去** —— 多半是保险库锁着时填的（那次保存被 `locked` 拒绝），而 token 输入框的占位文案一直写着「留空则保留已保存的密钥」，**在没有已保存密钥时这是一句谎话**，于是仓库看起来是配好的。已改为按真实状态显示：没有 Token 时提示「尚未保存 Token —— 请在下方粘贴后保存」，占位文案改成「粘贴你的 GitHub Token」。
+
+**验证**：extension tsc 0 · UNIT **612 / 55** · INT **120** · E2E **19 / 19** · build 0（409.0 kB）。
+### 报障续修：保存 Token 的死锁（2026-09-30）
+
+**用户报「功能还不能用」**：剪藏报 `notConfigured`（`getSecrets()` 成功 → 保险库已解锁；那唯一的分支就是 **vault 里没有 PAT**）。而**为什么装不进去**：`保存` 被「必须先探测成功」挡住，而探测又需要**已保存的 Token** —— 死锁。用户点的是 `保存`（灰的、什么也没发生），看起来却像保存过了。
+
+**修复**：
+
+- **拆掉死锁**：`canSaveStorageSection(probe, acknowledged, typedToken)` —— **填了 Token 就允许保存**，因为 `settings.github` 会用候选 Token **先探测再落盘**（坏 Token 会在同一次请求里可见地失败）。公开仓库的确认仍然无条件拦截。文案从「请先「测试连接」」改为「请先填写 Token —— 保存时会先验证仓库」（原文案在新语义下已经不成立）。
+- **保险库锁着时说清楚**：填了 Token 但保险库未解锁 → 保存按钮带原因禁用（「请先在「安全」页解锁保险库 —— Token 存在里面」），而不是让它跑一次网络请求后以 `locked` 失败。
+
+**测试**：`format.test.ts` 增加两条断言（有 Token 时可保存；公开仓库未确认时仍不可保存）。
+- **尚未做（仍待确认）**：专用码 `needToken`（要让 `resolveAuth` 的原因映射能区分「缺 Token」与「未配置」，涉及 3 个文件）。当前用把 `error.notConfigured` 的文案改准确（「仓库地址或已保存的 Token 有缺失」）顶上。
+
+
+### CI 优化：状态台账不再触发全量跑 · E2E 独立成 job（2026-09-30）
+
+- **`paths-ignore: docs/omnidev-state/**`**（push 与 PR）：这些是流程台账，**不是构建输入、没有任何测试读它**（契约测试只读 `docs/product/**`、`docs/audits/**`、`AGENTS.md`、`README.md` —— 这几个**刻意不忽略**，改它们本来就该让构建红）。此前每轮更新状态文件都会触发一次含浏览器套件的完整 CI。
+  副作用已知：只改被忽略路径的 PR **不会产生任何 check**（若将来开启 required status checks，那种 PR 会被挡住）；因此保留 `workflow_dispatch` 以便手动跑一次。
+- **E2E 拆成独立 job**（`needs: verify`）：unit 红了就不再花浏览器配额，两个 job 可以各自重跑；E2E job 里补上 **`npm run build`**（原来靠同 job 前序步骤留下的 `.output`，拆开后必须自己构建，否则 `test:e2e` 会对着不存在的产物跑），并新增**失败时上传 `test-results`**（trace/截图）。
+
+**验证方式（CI 无法本地跑，所以逐条执行了它的每个步骤）**：tsc 0 · UNIT 612 · INT 120 · build(chrome) 0 · `assert:content` OK · **build(firefox) 0** · **E2E 19/19** · companion tsc 0 · UNIT 48 · SYS 8 · **pack ✓（44 KB bundle）**。YAML 侧做了结构检查（无 tab / 缩进全偶数 / 顶层键与 3 个 job + `needs` 正确）；本机没有 yaml 解析器，GitHub 自己的解析是唯一剩下的未知，首次 push 即可确认。
+
 
 
 

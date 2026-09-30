@@ -39,6 +39,22 @@ export interface StatusInput {
 }
 
 /**
+ * Whether repository READS can succeed right now.
+ *
+ * Capture has more gates (a probe, the public-repository acknowledgement). Reading needs only a
+ * credential — and in token mode that credential lives in the vault, so a locked vault makes the Inbox,
+ * the proposals and the review queue equally unreadable. The popup says that once instead of three times.
+ */
+export function canReadRepository(prefs: PublicPrefs): boolean {
+  if (prefs.repoFullName.length === 0) return false;
+  const tokenMode = prefs.authMode !== 'ssh';
+  if ((tokenMode || prefs.securityMode === 'vault') && prefs.vaultLocked) return false;
+  if (tokenMode && !prefs.hasPat) return false;
+  if (!tokenMode && prefs.companion !== 'ok') return false;
+  return true;
+}
+
+/**
  * Whether a capture can proceed right now, most-blocking reason first.
  * Mirrors the guards in the capture service so the UI and the writer can never disagree.
  */
@@ -242,6 +258,8 @@ export const ERROR_GUIDANCE: Record<ErrorCode, ErrorGuidance> = {
   indexUnavailable: { titleKey: 'error.indexUnavailable', actionKey: 'guidance.indexUnavailable.action', target: 'sync' },
   // Not a storage problem to fix by editing a field: the answer is 'start an empty repository'.
   tierLocked: { titleKey: 'error.tierLocked', actionKey: 'guidance.tierLocked.action', target: 'storage' },
+  needToken: { titleKey: 'error.needToken', actionKey: 'guidance.needToken.action', target: 'storage' },
+  commitTooLarge: { titleKey: 'error.commitTooLarge', actionKey: 'guidance.commitTooLarge.action', target: 'retry' },
   unknown: { titleKey: 'error.unknown', actionKey: 'guidance.unknown.action', target: 'retry' },
 };
 
@@ -255,9 +273,22 @@ export function isPublicRepoWarning(probe: StoreProbe | null): boolean {
   return probe?.visibility === 'public';
 }
 
-/** Saving the storage section is blocked until the user acknowledges a public repository. */
-export function canSaveStorageSection(probe: StoreProbe | null, acknowledged: boolean): boolean {
+/**
+ * Whether the storage section may be saved.
+ *
+ * A TYPED token is enough. `settings.github` probes with the candidate before it persists anything, so a
+ * bad token fails visibly in the same request; requiring a successful probe first was a deadlock — the
+ * probe needs a stored token, and storing one is exactly what the button was refusing to do. The public
+ * repository acknowledgement still gates unconditionally.
+ */
+export function canSaveStorageSection(
+  probe: StoreProbe | null,
+  acknowledged: boolean,
+  /** A token is typed into the form right now. */
+  typedToken = false,
+): boolean {
+  if (probe && probe.visibility === 'public') return acknowledged;
+  if (typedToken) return true;
   if (!probe) return false;
-  if (probe.visibility === 'public') return acknowledged;
   return probe.canPush;
 }

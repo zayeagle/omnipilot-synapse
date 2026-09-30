@@ -104,6 +104,8 @@ test('TC-P3-E01 accepting a proposal card moves it out of cards/pending/ and cre
 
     const popup = await openPopupAndSettle(extension);
     const lang = await pageLang(popup);
+    // The proposals live behind a tab now: three lists, one pane at a time.
+    await popup.getByRole('tab', { name: dictText(lang, 'popup.pending'), exact: true }).click();
     const pendingCard = popup.locator('ul.pending li.pending-card');
 
     // A pending card is listed, with the content the AI proposed and its evidence path.
@@ -170,6 +172,8 @@ test('TC-P3-E01 discarding a proposal card archives it under archive/cards/ inst
     await expect(pendingCard).toHaveCount(1);
 
     const lang = await pageLang(popup);
+    // The proposals live behind a tab now: three lists, one pane at a time.
+    await popup.getByRole('tab', { name: dictText(lang, 'popup.pending'), exact: true }).click();
     await pendingCard
       .first()
       .getByRole('button', { name: dictText(lang, 'popup.cardDiscard'), exact: true })

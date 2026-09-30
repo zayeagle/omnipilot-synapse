@@ -297,12 +297,19 @@ function main(): void {
   const sshKeyControl = fieldWithError('options.auth.ssh.keyRef', { maxLength: 120 });
   const sshRepoRootControl = fieldWithError('options.auth.ssh.repoRoot', { maxLength: 500 });
   sshGrid.append(sshHostControl.root, sshUserControl.root, sshKeyControl.root, sshRepoRootControl.root);
+  /**
+   * Host, user and key reference are almost never changed, so they stay out of the way — but a stored
+   * non-default value keeps them visible (see `renderStore`), which is what stops an existing
+   * configuration from being stranded behind a hidden control.
+   */
+  const sshDefaultsHint = el('p', 'hint', t('options.auth.ssh.defaults', null, LANG));
   const sshBlock = el('div', 'card-body');
   sshBlock.append(
     el('h3', 'card-title', t('options.auth.ssh.title', null, LANG)),
     localCloneNotice,
     cloneBlock,
     sshGrid,
+    sshDefaultsHint,
     sshKeyHint,
     sshRepoRootHint,
     sshTestButton,
@@ -446,7 +453,14 @@ function main(): void {
   const searchBlock = el('div', 'card-body');
   searchBlock.append(searchRow, rebuildButton, searchMessage, searchList);
 
-  syncCard.body.append(syncStatusGrid, syncNowButton, syncMessage, conflictsBlock, syncPolicyBlock, searchBlock);
+  // The four policy controls are refinements, not decisions: collapsed, the tab is status + conflicts +
+  // search, which is what the tab is for. The save button stays in the footer and works while collapsed.
+  const syncAdvanced = el('details', 'advanced');
+  syncAdvanced.append(
+    el('summary', undefined, t('options.store.advanced', null, LANG)),
+    syncPolicyBlock,
+  );
+  syncCard.body.append(syncStatusGrid, syncNowButton, syncMessage, conflictsBlock, syncAdvanced, searchBlock);
   syncCard.footer.append(saveSyncPolicyButton);
 
   /* ------------------------------- 安全 section ----------------------------- */
@@ -655,7 +669,12 @@ function main(): void {
 
   function renderStore(): void {
     syncForm();
-    patStored.hidden = !hasPat;
+    // "Leave empty to keep the stored key" is a lie when there is no stored key — and that lie is how a
+    // repository ends up looking configured while every capture fails with notConfigured.
+    patStored.hidden = false;
+    patStored.textContent = hasPat ? t('options.apiKeyStored', null, LANG) : t('options.store.patMissing', null, LANG);
+    patStored.dataset['kind'] = hasPat ? 'ok' : 'error';
+    patInput.input.placeholder = hasPat ? t('options.apiKeyKeep', null, LANG) : t('options.store.patNeeded', null, LANG);
     const publicWarningVisible = isPublicRepoWarning(probe);
     publicWarning.hidden = !publicWarningVisible;
     ackBlock.hidden = !publicWarningVisible;
@@ -674,6 +693,14 @@ function main(): void {
       control.error.hidden = !sshSelected || message.length === 0;
       control.error.textContent = sshSelected ? message : '';
     }
+    // The three fields nobody changes are shown only when they are NOT the defaults: hiding a value the
+    // user actually set would be the worst of both worlds.
+    const sshCustom =
+      form.ssh.host !== 'github.com' || form.ssh.user !== 'git' || form.ssh.keyRef !== 'default';
+    sshHostControl.root.hidden = !sshCustom;
+    sshUserControl.root.hidden = !sshCustom;
+    sshKeyControl.root.hidden = !sshCustom;
+    sshDefaultsHint.hidden = sshCustom;
     // The clone command is rebuilt from what the form currently says, so the user can type the
     // repository and the path in either order and always copy a command that matches the screen.
     const guidance = cloneGuidance(
@@ -752,14 +779,22 @@ function main(): void {
     innerPathControl.error.textContent = inner.ok ? '' : t(inner.messageKey, null, LANG);
     const invalidMessage = address.ok ? (inner.ok ? '' : innerPathControl.error.textContent) : repoAddressControl.error.textContent;
 
+    const typedToken = patInput.input.value.trim().length > 0;
+    // The token lives in the vault, so a locked vault cannot accept one. Saying it here is the difference
+    // between a disabled button with a reason and a save that fails on a round trip with `locked`.
+    const tokenNeedsUnlock = typedToken && form.authMode === 'token' && !vault.unlocked;
+
     saveStoreButton.disabled =
       (invalidMessage?.length ?? 0) > 0 ||
-      saveStorageDisabled(probe, ackCheckbox.input.checked) ||
+      tokenNeedsUnlock ||
+      saveStorageDisabled(probe, ackCheckbox.input.checked, typedToken) ||
       tierBlocksSave;
     const hint =
       (invalidMessage?.length ?? 0) > 0
         ? invalidMessage ?? ''
-        : storageSaveBlocked(probe, ackCheckbox.input.checked, tierBlocksSave, LANG);
+        : tokenNeedsUnlock
+          ? t('options.store.patNeedsUnlock', null, LANG)
+          : storageSaveBlocked(probe, ackCheckbox.input.checked, tierBlocksSave, LANG);
     storeMessage.hidden = hint.length === 0;
     storeMessage.textContent = hint;
   }
@@ -1007,7 +1042,7 @@ function main(): void {
       renderStore();
       return;
     }
-    if (saveStorageDisabled(probe, ackCheckbox.input.checked)) {
+    if (saveStorageDisabled(probe, ackCheckbox.input.checked, patInput.input.value.trim().length > 0)) {
       renderStore();
       return;
     }

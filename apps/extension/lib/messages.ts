@@ -394,6 +394,10 @@ export type ErrorCode =
   | 'indexUnavailable'
   /** The content tier cannot be changed here: the repository already holds content (R8). */
   | 'tierLocked'
+  /** Token mode with no stored token: a different fix from "nothing is configured". */
+  | 'needToken'
+  /** One commit carried more files than the guard allows (search-shard fan-out). */
+  | 'commitTooLarge'
   | 'unknown';
 
 export interface OkResponse<T = unknown> {

@@ -257,6 +257,7 @@ export function normalizeErrorCode(value: unknown): ErrorCode {
 const ERROR_HINT_KEYS: Partial<Record<ErrorCode, string>> = {
   scope: 'options.store.scopeHint',
   notConfigured: 'popup.needSetup',
+  needToken: 'options.store.patMissing',
   needVault: 'popup.needUnlock',
   locked: 'popup.needUnlock',
   publicRepo: 'options.store.publicWarning',
@@ -793,9 +794,16 @@ export function transparentModeNeedsConfirm(mode: SecurityMode, confirmed: boole
 
 /* ----------------------------- storage section ----------------------------- */
 
-/** The 存储 section may only be saved once the probe exists and the visibility question is settled. */
-export function saveStorageDisabled(probe: StoreProbe | null, acknowledged: boolean): boolean {
-  return !canSaveStorageSection(probe, acknowledged);
+/**
+ * The 存储 section may only be saved once the visibility question is settled — or with a typed token,
+ * which the save itself verifies (see `canSaveStorageSection`).
+ */
+export function saveStorageDisabled(
+  probe: StoreProbe | null,
+  acknowledged: boolean,
+  typedToken = false,
+): boolean {
+  return !canSaveStorageSection(probe, acknowledged, typedToken);
 }
 
 /** Inline reason for a disabled 保存 button (empty when saving is allowed). */

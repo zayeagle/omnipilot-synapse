@@ -20,6 +20,7 @@ import { MessageRouter, createRouterOptions } from '../lib/background/router';
 import { CaptureService } from '../lib/capture/service';
 import { detectLang, t } from '../lib/i18n';
 import { PAGE_CLIP_MESSAGE, type SenderLike } from '../lib/messages';
+import { createSessionSealer } from '../lib/security/sealer';
 import { singleFlight } from '../lib/single-flight';
 import { NativeClient, type NativePort } from '../lib/native/client';
 import { AiLedger, CaptureQueue } from '../lib/queues';
@@ -38,13 +39,14 @@ export default defineBackground(() => {
   const area = createStorageArea();
   const session = new KeySession({ store: createSessionStore(), ttlMs: DEFAULT_TTL_MS });
   const settings = new SettingsStore({ area, session, crypto: globalThis.crypto });
-  const queue = new CaptureQueue(area);
+  const queue = new CaptureQueue(area, Date.now, createSessionSealer(session, { now: Date.now }));
   const ledger = new AiLedger(area);
   const native = createNativeClient();
   // One cache for the worker's lifetime: it holds the dirty set, and two instances would each think
   // they owned it.
   const syncCache = new SyncCache(
     createBestBackend((globalThis as { indexedDB?: IDBFactory }).indexedDB ?? null).backend,
+    createSessionSealer(session, { now: Date.now }),
   );
   const triggers = createSyncTriggers();
 

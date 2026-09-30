@@ -12,18 +12,36 @@ import { urlKey } from './core/dedup';
 import type { CaptureRequestPayload, ErrorCode } from './messages';
 import { STORAGE_KEYS, type StorageAreaLike } from './settings-store';
 
+import type { Sealer } from './security/sealer';
+
 export const MAX_QUEUE_ENTRIES = 50;
 export const MAX_QUEUE_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAX_LEDGER_ENTRIES = 500;
 
-export interface QueuedCapture {
+/** Fields every queued entry has, stored or usable. */
+interface QueuedBase {
   id: string;
   url_key: string;
-  payload: CaptureRequestPayload;
   attempts: number;
   queued_at: string;
   last_error?: string;
 }
+
+/** A queued capture as a caller sees it: the payload is always readable. */
+export interface QueuedCapture extends QueuedBase {
+  payload: CaptureRequestPayload;
+}
+
+/** A queued capture as storage holds it when a sealer exists: the payload is ciphertext. */
+export interface StoredQueuedCapture extends QueuedBase {
+  sealed: string;
+}
+
+/**
+ * What actually sits in `chrome.storage.local`: one arm or the other. The split exists so sealing stays
+ * an implementation detail of storage — everything above `CaptureQueue` still sees a required payload.
+ */
+export type StoredQueued = QueuedCapture | StoredQueuedCapture;
 
 export interface LedgerEntry {
   source_id: string;
@@ -39,6 +57,17 @@ function isoNow(now: () => number): string {
   return new Date(now()).toISOString();
 }
 
+  /** The metadata half of an entry, copied without the payload arm. */
+function base(entry: StoredQueued): QueuedBase {
+  return {
+    id: entry.id,
+    url_key: entry.url_key,
+    attempts: entry.attempts,
+    queued_at: entry.queued_at,
+    ...(entry.last_error !== undefined ? { last_error: entry.last_error } : {}),
+  };
+}
+
 function makeQueueId(now: () => number): string {
   return `q${now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 }
@@ -46,21 +75,50 @@ function makeQueueId(now: () => number): string {
 export class CaptureQueue {
   private readonly area: StorageAreaLike;
   private readonly now: () => number;
+  /**
+   * Optional: a queue without one stores the payload as-is (tests, or a profile with no vault). With
+   * one, what lands in browser storage is ciphertext — a capture that could not be written yet must not
+   * become a plaintext copy of the page sitting in the profile.
+   */
+  private readonly sealer?: Sealer;
 
-  constructor(area: StorageAreaLike, now: () => number = Date.now) {
+  constructor(area: StorageAreaLike, now: () => number = Date.now, sealer?: Sealer) {
     this.area = area;
     this.now = now;
+    if (sealer) this.sealer = sealer;
+  }
+
+  /** Every stored entry, pruned — without trying to open any payload. */
+  private async rawEntries(): Promise<StoredQueued[]> {
+    const stored = await this.area.get(STORAGE_KEYS.captureQueue);
+    const raw = stored[STORAGE_KEYS.captureQueue];
+    return Array.isArray(raw) ? this.prune(raw as StoredQueued[]) : [];
   }
 
   private async read(): Promise<QueuedCapture[]> {
-    const stored = await this.area.get(STORAGE_KEYS.captureQueue);
-    const raw = stored[STORAGE_KEYS.captureQueue];
-    if (!Array.isArray(raw)) return [];
-    return this.prune(raw as QueuedCapture[]);
+    const opened: QueuedCapture[] = [];
+    for (const entry of await this.rawEntries()) {
+      const payload = await this.openPayload(entry);
+      // An entry that cannot be opened right now (the vault is locked) stays on disk rather than being
+      // dropped: it is still the user's capture, and it becomes replayable the moment they unlock.
+      if (payload) opened.push({ ...base(entry), payload });
+    }
+    return opened;
+  }
+
+  /** The payload of one entry, opened with the session key when it was sealed. */
+  private async openPayload(entry: StoredQueued): Promise<CaptureRequestPayload | null> {
+    if ('payload' in entry) return entry.payload;
+    if (!this.sealer) return null;
+    try {
+      return JSON.parse(await this.sealer.open(entry.sealed)) as CaptureRequestPayload;
+    } catch {
+      return null;
+    }
   }
 
   /** Drop entries that are too old to be worth replaying. */
-  private prune(entries: QueuedCapture[]): QueuedCapture[] {
+  private prune(entries: StoredQueued[]): StoredQueued[] {
     const cutoff = this.now() - MAX_QUEUE_AGE_MS;
     return entries.filter((entry) => {
       const at = Date.parse(entry.queued_at);
@@ -68,7 +126,7 @@ export class CaptureQueue {
     });
   }
 
-  private async write(entries: QueuedCapture[]): Promise<void> {
+  private async write(entries: StoredQueued[]): Promise<void> {
     await this.area.set({
       [STORAGE_KEYS.captureQueue]: entries.slice(-MAX_QUEUE_ENTRIES),
     });
@@ -76,32 +134,34 @@ export class CaptureQueue {
 
   /** Queue a capture. Re-queuing the same URL replaces the previous attempt instead of duplicating. */
   async enqueue(payload: CaptureRequestPayload): Promise<QueuedCapture> {
-    const entries = await this.read();
+    const entries = await this.rawEntries();
     const key = urlKey(payload.url);
     const existingIndex = entries.findIndex((entry) => entry.url_key === key);
-    const entry: QueuedCapture = {
-      id: existingIndex >= 0 ? (entries[existingIndex]?.id ?? makeQueueId(this.now)) : makeQueueId(this.now),
-      url_key: key,
-      payload,
-      attempts: 0,
-      queued_at: isoNow(this.now),
-    };
-    if (entry.attempts === 0 && existingIndex >= 0) entry.attempts = entries[existingIndex]?.attempts ?? 0;
+    const id = existingIndex >= 0 ? (entries[existingIndex]?.id ?? makeQueueId(this.now)) : makeQueueId(this.now);
+    const attempts = existingIndex >= 0 ? (entries[existingIndex]?.attempts ?? 0) : 0;
+    const queuedAt = isoNow(this.now);
+    // Sealed when a vault exists: a capture that could not be written yet must not become a plaintext
+    // copy of the page sitting in browser storage.
+    const stored: StoredQueued = this.sealer
+      ? { id, url_key: key, attempts, queued_at: queuedAt, sealed: await this.sealer.seal(JSON.stringify(payload)) }
+      : { id, url_key: key, attempts, queued_at: queuedAt, payload };
     if (existingIndex >= 0) {
-      entries[existingIndex] = entry;
+      entries[existingIndex] = stored;
     } else {
-      entries.push(entry);
+      entries.push(stored);
     }
     await this.write(entries);
-    return entry;
+    // The caller gets the usable form; only storage ever saw the sealed one.
+    return { id, url_key: key, attempts, queued_at: queuedAt, payload };
   }
 
   async list(): Promise<QueuedCapture[]> {
     return this.read();
   }
 
+  /** The count of QUEUED captures, readable or not: a locked vault must not look like an empty queue. */
   async size(): Promise<number> {
-    return (await this.read()).length;
+    return (await this.rawEntries()).length;
   }
 
   async remove(id: string): Promise<void> {
@@ -113,7 +173,7 @@ export class CaptureQueue {
     const entries = await this.read();
     const index = entries.findIndex((entry) => entry.id === id);
     if (index === -1) return;
-    const entry = entries[index] as QueuedCapture;
+    const entry = entries[index] as StoredQueued;
     entry.attempts += 1;
     if (error !== undefined) entry.last_error = error;
     await this.write(entries);

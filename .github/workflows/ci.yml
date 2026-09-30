@@ -1,9 +1,18 @@
 name: CI
 
+# `docs/omnidev-state/**` is workflow bookkeeping: it is not a build input and no test reads it.
+# The design-docs contract test reads docs/product/**, docs/audits/**, AGENTS.md and README.md, and
+# those are deliberately NOT ignored — changing them is supposed to fail the build. Ignoring only the
+# state files keeps a bookkeeping-only commit from spending a full run, browser suite included.
 on:
   push:
     branches: [main]
+    paths-ignore:
+      - 'docs/omnidev-state/**'
   pull_request:
+    paths-ignore:
+      - 'docs/omnidev-state/**'
+  # Always available by hand, so an ignored-path change can still be verified on purpose.
   workflow_dispatch:
 
 defaults:
@@ -12,8 +21,9 @@ defaults:
 
 jobs:
   verify:
+    name: extension - types, tests, build
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -44,17 +54,6 @@ jobs:
       - name: Build (Firefox)
         run: npm run build:firefox
 
-      - name: End-to-end tests
-        # Extension E2E needs a headed browser, so Linux CI runs it under a virtual display.
-        run: |
-          npx playwright install --with-deps chromium
-          if [ "$RUNNER_OS" = "Linux" ]; then
-            xvfb-run --auto-servernum -- npm run test:e2e
-          else
-            npm run test:e2e
-          fi
-        shell: bash
-
       - name: Upload build output
         if: always()
         uses: actions/upload-artifact@v4
@@ -64,7 +63,53 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  e2e:
+    name: extension - end to end
+    runs-on: ubuntu-latest
+    # Its own job so a red unit test does not spend the browser budget, and so the two can be re-run
+    # independently. This is the only layer that catches a wiring bug in the worker, the popup or the
+    # options page — it has paid for itself every time it was run.
+    needs: verify
+    # NOT part of the automatic gate any more. Run it locally (`npm run test:e2e`) or from the Actions tab
+    # via `workflow_dispatch` when a change touches the worker, the popup or the options page — those are
+    # the wiring bugs it exists to catch. The specs are untouched and still hold the E2E baseline.
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/extension/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Build the extension under test
+        # The suite loads `.output/chrome-mv3`, so a separate job has to produce it: `test:e2e` alone
+        # would run against whatever the checkout happens to contain (nothing).
+        run: npm run build
+
+      - name: Install the browser
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        # Extension E2E needs a headed browser, so Linux runs it under a virtual display.
+        run: xvfb-run --auto-servernum -- npm run test:e2e
+
+      - name: Upload the failure report
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: apps/extension/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   git-bridge:
+    name: companion - types, tests, system
     runs-on: ubuntu-latest
     timeout-minutes: 20
     # The workflow default is the extension; this job builds the companion instead.

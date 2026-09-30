@@ -135,6 +135,16 @@ async function resolveRepo(context: BackgroundContext): Promise<ResolvedRepo> {
   const authContext = await buildAuthContext(context);
   const settings = authContext.snapshot;
   const prefix = settings.github.pathPrefix || null;
+  // A diagnosis, not a second gate: the repository is named and the vault is open, but no token was ever
+  // stored. `notConfigured` cannot tell that apart from "no repository", and the two need different fixes —
+  // so this one says exactly what is missing. The auth layer below still decides whether the mode can run.
+  if (settings.authMode === 'token' && settings.github.owner.length > 0 && settings.github.repo.length > 0) {
+    const stored = await context.settings.peekSecrets();
+    if (stored && !stored.githubPat) {
+      throw new MessageError('storage: no GitHub token is stored yet', 'needToken');
+    }
+  }
+
   const resolution = await resolveAuth(authContext);
   if (!resolution.ok) raiseUnavailable(resolution.reason, resolution.message);
   const auth = resolution.auth;

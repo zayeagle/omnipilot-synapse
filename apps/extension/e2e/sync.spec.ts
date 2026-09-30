@@ -1,5 +1,7 @@
 import { expect, test, type Page } from '@playwright/test';
 
+import { createTransparentCodec } from '../lib/store/codec';
+
 import {
   TEST_DRIFT_MARKER,
   captureSource,
@@ -58,11 +60,18 @@ async function runSync(page: Page, reason = 'manual'): Promise<SyncReportView> {
  */
 async function editCachedRecordLocally(
   page: Page,
+  github: GitHubStub,
   path: string,
   edit: { title: string; body: string; capturedAt: string },
 ): Promise<void> {
+  // The cache is sealed at rest (R8), so a body can no longer be read out of IndexedDB from a page — and
+  // a test should not want to: that is the property under protection. The record is decoded from the
+  // repository's own bytes instead, which keeps the 'the user changed it locally' half honest.
+  const document = github.files.get(path) ?? '';
+  if (document.length === 0) throw new Error('no repository record at ' + path);
+  const base = await createTransparentCodec({}).decode(document);
   const outcome = await page.evaluate(
-    async (input: { path: string; title: string; body: string; capturedAt: string }) => {
+    async (input: { path: string; record: unknown; capturedAt: string }) => {
       const open = (globalThis as unknown as {
         indexedDB: { open: (name: string, version: number) => IDBOpenDBRequest };
       }).indexedDB.open('omnipilot-sync', 1);
@@ -80,11 +89,9 @@ async function editCachedRecordLocally(
         request.onerror = () => reject(request.error);
       });
       if (!read) return { edited: false as const };
-      const record = { ...(read['record'] as Record<string, unknown>) };
-      record['title'] = input.title;
-      record['body'] = input.body;
-      record['captured_at'] = input.capturedAt;
-      const next = { ...read, record, updatedAt: input.capturedAt };
+      const next: Record<string, unknown> = { ...read, record: input.record, updatedAt: input.capturedAt };
+      // An entry carries exactly one arm: the plaintext one replaces the sealed one here.
+      delete next['sealed'];
       await new Promise<void>((resolve, reject) => {
         const request = db
           .transaction('records', 'readwrite')
@@ -103,7 +110,11 @@ async function editCachedRecordLocally(
       });
       return { edited: true as const };
     },
-    { path, ...edit },
+    {
+      path,
+      record: { ...base, title: edit.title, body: edit.body, captured_at: edit.capturedAt },
+      capturedAt: edit.capturedAt,
+    },
   );
   if (!outcome.edited) throw new Error('no cached record at ' + path + ' to edit locally');
 }
@@ -212,7 +223,7 @@ test('TC-E2E-05 the same note changed on both sides keeps both versions in the r
     const item = soleManifestItem(github);
     const path = item.path;
     const localBody = 'my own rewrite that must not be lost';
-    await editCachedRecordLocally(options, path, {
+    await editCachedRecordLocally(options, github, path, {
       title: 'My own rewrite',
       body: localBody,
       capturedAt: '2099-01-02T00:00:00.000Z',
@@ -292,7 +303,7 @@ async function createConflict(): Promise<ConflictFixture> {
   const path = soleManifestItem(github).path;
   const localBody = 'my own rewrite that must not be lost';
   const remoteBody = 'the remote rewrite that keeps the path';
-  await editCachedRecordLocally(options, path, {
+  await editCachedRecordLocally(options, github, path, {
     title: 'My own rewrite',
     body: localBody,
     capturedAt: '2099-01-02T00:00:00.000Z',

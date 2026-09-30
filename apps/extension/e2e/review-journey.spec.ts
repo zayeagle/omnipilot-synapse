@@ -66,6 +66,8 @@ test('TC-P9-E01 capture, distill, accept — and the accepted item appears in th
     // 2. The popup lists the proposal and accepts it — the human decision, in the real surface.
     const popup = await openAndSettle(extension);
     const lang = await pageLang(popup);
+    // The proposals live behind a tab now: three lists, one pane at a time.
+    await popup.getByRole('tab', { name: dictText(lang, 'popup.pending'), exact: true }).click();
     const card = popup.locator('ul.pending li.pending-card');
     await expect(card).toHaveCount(1);
     await expect(card.first()).toContainText(CARD_TITLE);

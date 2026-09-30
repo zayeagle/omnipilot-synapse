@@ -17,6 +17,7 @@ import type { CryptoProvider } from '../security/crypto-key';
 import type { KeySession } from '../security/key-session';
 import type { ContentCodec, IndexItem } from './codec';
 import {
+  CommitTooLargeError,
   NotConfiguredError,
   NotFoundError,
   PublicRepoError,
@@ -138,7 +139,7 @@ export class GitHubStore implements RepoStore {
   async commitFiles(files: RepoFile[], message: string): Promise<CommitResult> {
     if (files.length === 0) throw new NotConfiguredError('storage: refusing an empty commit');
     if (files.length > MAX_COMMIT_FILES) {
-      throw new NotConfiguredError(`storage: refusing a commit with ${files.length} files`);
+      throw new CommitTooLargeError(files.length, MAX_COMMIT_FILES);
     }
     return this.api.commitFiles(files, message);
   }

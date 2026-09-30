@@ -13,6 +13,7 @@ import {
   syncLine,
   syncLineParts,
   syncOutcomeLabel,
+  canReadRepository,
   visibilityLabel,
 } from './status';
 import type { StoreProbe } from './store/types';
@@ -70,6 +71,20 @@ describe('capture readiness (F8 UNIT)', () => {
     // A locked vault still blocks it when the CONTENT tier is the encrypted one.
     const vaultSsh: PublicPrefs = { ...ssh, companion: 'ok', securityMode: 'vault', vaultLocked: true };
     expect(captureReadiness({ prefs: vaultSsh, probe: null })).toBe('vault-locked');
+  });
+
+  it('TC-F8-U07 reading needs a credential, and a locked vault is what hides it (R7/R8)', () => {
+    expect(canReadRepository(READY_PREFS)).toBe(true);
+    // The Inbox, the proposals and the review queue all read the repository, so the vault gates them too.
+    expect(canReadRepository({ ...READY_PREFS, vaultLocked: true })).toBe(false);
+    expect(canReadRepository({ ...READY_PREFS, repoFullName: '' })).toBe(false);
+    expect(canReadRepository({ ...READY_PREFS, hasPat: false })).toBe(false);
+    // SSH reads through the companion, with no PAT and (in transparent mode) no vault key at all.
+    const ssh: PublicPrefs = { ...READY_PREFS, authMode: 'ssh', hasPat: false, companion: 'ok' };
+    expect(canReadRepository(ssh)).toBe(true);
+    expect(canReadRepository({ ...ssh, vaultLocked: true })).toBe(true);
+    expect(canReadRepository({ ...ssh, companion: 'missing' })).toBe(false);
+    expect(canReadRepository({ ...ssh, securityMode: 'vault', vaultLocked: true })).toBe(false);
   });
   it('TC-F8-U03 blocks a public repository that has not been acknowledged', () => {
     const publicProbe = probe({ visibility: 'public', canWrite: false, warning: 'public-repo' });

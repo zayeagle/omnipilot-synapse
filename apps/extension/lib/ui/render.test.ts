@@ -329,7 +329,12 @@ describe('popup console mount (F8 UNIT)', () => {
     expect(labels.some((label) => label.includes('剪藏本页'))).toBe(true);
     expect(labels.some((label) => label.includes('提炼'))).toBe(true);
     expect(labels.some((label) => label.includes('打开'))).toBe(true);
-    expect(labels.some((label) => label.includes('设置'))).toBe(true);
+    // Settings is an icon button now, so its name lives in the accessible label rather than in text.
+    expect(
+      [...app.querySelectorAll('button[aria-label]')].some((node) =>
+        (node.getAttribute('aria-label') ?? '').includes('设置'),
+      ),
+    ).toBe(true);
     expect(labels.some((label) => label.includes('刷新'))).toBe(true);
     const clip = [...app.querySelectorAll('button')].find((node) =>
       (node.textContent ?? '').includes('剪藏本页'),

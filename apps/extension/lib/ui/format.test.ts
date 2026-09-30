@@ -392,6 +392,10 @@ describe('save gates and acknowledgements (F8 UNIT)', () => {
     expect(saveStorageDisabled(null, true)).toBe(true);
     expect(saveStorageDisabled(probe(), false)).toBe(false);
     expect(saveStorageDisabled(probe(), true)).toBe(false);
+    // A typed token is enough to save: the handler probes with it before persisting, and requiring a
+    // stored token first was a deadlock (the probe needs the token the button refused to store).
+    expect(saveStorageDisabled(null, true, true)).toBe(false);
+    expect(saveStorageDisabled({ ...probe(), visibility: 'public', canWrite: false }, false, true)).toBe(true);
   });
 
   it('TC-F8-U03 blocks the storage section on a public repo until acknowledged', () => {

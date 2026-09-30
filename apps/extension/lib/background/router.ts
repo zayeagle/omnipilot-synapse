@@ -41,11 +41,30 @@ export interface MessageRouterOptions {
   logger?: (message: string, detail?: string) => void;
 }
 
-/** Which budget a request spends. Credential and vault traffic is deliberately the tightest. */
+/**
+ * Which budget a request spends.
+ *
+ * Split by what the request TOUCHES, not by which surface sends it: credential and vault traffic is
+ * deliberately the tightest budget there is, while repository reads and writes share a generous one.
+ * The old split put every unlisted type on `vault` — so a single popup open (status, Inbox, proposals,
+ * review queue, sync status) spent five or six of twelve and the next action came back `rateLimited`.
+ * A real popup has no tab id either, so those requests also share one bucket for the whole profile.
+ */
+const CREDENTIAL_TYPES: ReadonlySet<RequestType> = new Set<RequestType>([
+  'settings.github',
+  'settings.provider',
+  'settings.security',
+  'settings.export',
+  'settings.reset',
+  'vault.setup',
+  'vault.unlock',
+  'vault.lock',
+]);
+
 export function limiterKeyFor(type: RequestType): keyof RouterLimiters {
   if (type === 'distill.request') return 'ai';
-  if (type === 'capture.request' || type === 'store.probe') return 'github';
-  return 'vault';
+  if (CREDENTIAL_TYPES.has(type)) return 'vault';
+  return 'github';
 }
 
 export function errorCodeOf(error: unknown): ErrorCode {
@@ -99,6 +118,8 @@ const ERROR_CODE_TABLE: Record<ErrorCode, true> = {
   syncConflict: true,
   indexUnavailable: true,
   tierLocked: true,
+  needToken: true,
+  commitTooLarge: true,
   unknown: true,
 };
 

@@ -132,6 +132,8 @@ describe('SyncCache (F3 UNIT)', () => {
     await cache.put(record, { path: 'inbox/a.md', sha: '' });
     const fromBackend = await backend.listRecords();
     expect(fromBackend).toHaveLength(1);
-    expect(normalizeCachedRecord(fromBackend[0])?.record).toEqual(record);
+    const stored = normalizeCachedRecord(fromBackend[0]);
+    // The backend holds the STORED arm — here the plaintext one, because this cache has no sealer.
+    expect(stored && 'record' in stored ? stored.record : null).toEqual(record);
   });
 });
