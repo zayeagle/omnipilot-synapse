@@ -97,6 +97,14 @@ export interface ExtensionSettings {
   enabled: boolean;
   aiAuthorized: boolean;
   securityMode: SecurityMode;
+  /**
+   * Whether the user has explicitly chosen the content tier on this installation.
+   *
+   * `false` is not "vault" and it is not "transparent": it means the question has not been
+   * answered here yet, and the storage page must ask before it can save (T7). Existing installs
+   * upgrade to `false` and are asked once, with their current tier pre-selected.
+   */
+  contentTierChosen: boolean;
   autoLockMinutes: number;
   storeKind: 'github';
   /** Which authorization mode remote operations use. */
@@ -129,6 +137,7 @@ export interface SettingsPatch {
   enabled?: boolean;
   aiAuthorized?: boolean;
   securityMode?: SecurityMode;
+  contentTierChosen?: boolean;
   autoLockMinutes?: number;
   authMode?: AuthMode;
   github?: Partial<GithubConfig>;
@@ -147,6 +156,7 @@ export const DEFAULT_SETTINGS: ExtensionSettings = {
    * keeps whatever `.omnipilot/config.json` records — see `resolveTier`.
    */
   securityMode: 'transparent',
+  contentTierChosen: false,
   autoLockMinutes: 30,
   storeKind: 'github',
   authMode: 'token',
@@ -243,6 +253,8 @@ export function normalizeSettings(value: unknown): ExtensionSettings {
     enabled: asBoolean(raw['enabled'], DEFAULT_SETTINGS.enabled),
     aiAuthorized: asBoolean(raw['aiAuthorized'], DEFAULT_SETTINGS.aiAuthorized),
     securityMode,
+    // Only an explicit `true` counts: an absent or junk value keeps asking rather than assuming.
+    contentTierChosen: raw['contentTierChosen'] === true,
     autoLockMinutes: clampAutoLock(
       typeof raw['autoLockMinutes'] === 'number'
         ? raw['autoLockMinutes']
@@ -279,6 +291,7 @@ export function mergeSettings(current: ExtensionSettings, patch: SettingsPatch):
   if (patch.enabled !== undefined) next.enabled = patch.enabled;
   if (patch.aiAuthorized !== undefined) next.aiAuthorized = patch.aiAuthorized;
   if (patch.securityMode !== undefined) next.securityMode = patch.securityMode;
+  if (patch.contentTierChosen !== undefined) next.contentTierChosen = patch.contentTierChosen;
   if (patch.autoLockMinutes !== undefined) {
     next.autoLockMinutes = clampAutoLock(patch.autoLockMinutes);
   }

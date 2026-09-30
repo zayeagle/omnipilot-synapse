@@ -98,7 +98,7 @@ export const CONFIG_COMMIT_MESSAGE = 'config: set content tier';
  * under the previous extension (04-design F3 step 5).
  */
 export class TierMigrationRequiredError extends Error {
-  readonly code: ErrorCode = 'validation';
+  readonly code: ErrorCode = 'tierLocked';
   readonly from: SecurityMode;
   readonly to: SecurityMode;
   readonly itemCount: number;
@@ -603,4 +603,57 @@ export async function switchTier(options: SwitchTierOptions): Promise<StoreConfi
     { ...current, security_mode: options.to },
     options.message ?? `config: switch content tier to ${options.to}`,
   );
+}
+
+export interface StoreConfigFileOptions extends TierContext {
+  /** The tier the user explicitly chose; used only for a repository that records nothing. */
+  chosenMode: SecurityMode;
+  /** Branch to record alongside it, when the caller knows it. */
+  branch?: string;
+  /** Sync policy to record alongside it, when the caller knows it. */
+  syncPolicy?: Partial<StoreSyncPolicy>;
+}
+
+/**
+ * The `.omnipilot/config.json` a repository still needs, or `null` when it must not be given one.
+ *
+ * Returned rather than committed so it can ride in the commit the caller was going to make anyway: a
+ * capture then costs one commit instead of two, and a failed capture cannot leave a store whose tier
+ * was recorded but whose note was not. Two rules shape it, both from `resolveTier`: a recorded mode is
+ * never overwritten (the repository wins over the UI), and a repository that holds content without
+ * recording a tier is left untouched rather than guessed at — writing a tier there is exactly the
+ * silent downgrade this layer exists to prevent.
+ */
+export async function storeConfigFileIfMissing(
+  options: StoreConfigFileOptions,
+): Promise<RepoFile | null> {
+  const text = await options.store.readFile(storeConfigPath(options.prefix));
+  // The index is only read when the config is missing: that is the one case where "is this a new
+  // store?" has to be answered, and it is the answer that decides between recording and refusing.
+  const hasContent =
+    text === null || text.trim() === ''
+      ? !isIndexEmpty(parseIndex(await options.store.readFile(indexPath(options.prefix))))
+      : false;
+  const resolution = resolveTier({
+    configText: text,
+    hasContent,
+    fallbackMode: options.chosenMode,
+    now: nowIso(options),
+  });
+  if (resolution.source === 'config' || resolution.requiresUserDecision) return null;
+  const seeded: StoreConfig = {
+    ...resolution.config,
+    sync_policy: { ...resolution.config.sync_policy, ...(options.syncPolicy ?? {}) },
+  };
+  const branch = options.branch?.trim();
+  if (branch !== undefined && branch !== '') seeded.branch = branch;
+  return {
+    path: storeConfigPath(options.prefix),
+    content: serializeStoreConfig({
+      ...seeded,
+      // Whoever writes now is the writer of record — the same rule `saveStoreConfig` follows.
+      client_version: options.clientVersion ?? seeded.client_version,
+      updated_at: nowIso(options),
+    }),
+  };
 }

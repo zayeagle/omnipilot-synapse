@@ -15,6 +15,8 @@ import {
   DEFAULT_STORE_SYNC_POLICY,
   TierMigrationRequiredError,
   createStoreConfig,
+  parseStoreConfig,
+  storeConfigFileIfMissing,
   indexToFile,
   loadStoreConfig,
   mergeIndex,
@@ -297,7 +299,7 @@ describe('vault-mode commit payload (F3 INT)', () => {
     );
     await expect(switchTier({ store, prefix: PREFIX, to: 'transparent' })).rejects.toMatchObject({
       name: 'TierMigrationRequiredError',
-      code: 'validation',
+      code: 'tierLocked',
       from: 'vault',
       to: 'transparent',
       itemCount: 1,
@@ -464,5 +466,53 @@ describe('store config fields & 0.1.0 compatibility (F6 INT)', () => {
     expect(store.dump()).toEqual(before);
     expect(store.commits).toHaveLength(1);
     await expect(codec.decode(store.dump()[committed.path] ?? '')).resolves.toEqual(record);
+  });
+});
+
+describe('storeConfigFileIfMissing — the repository describes itself (T7 INT)', () => {
+  it('TC-P8-I01 hands back the tier record for a fresh store, and nothing once it is recorded', async () => {
+    const store = new MemoryKnowledgeStore();
+    const file = await storeConfigFileIfMissing({
+      store,
+      prefix: PREFIX,
+      chosenMode: 'transparent',
+      branch: 'trunk',
+      clientVersion: '0.3.0',
+      now: () => Date.parse(NOW),
+    });
+    expect(file?.path).toBe(storeConfigPath(PREFIX));
+    const record = parseStoreConfig(JSON.parse(file?.content ?? '{}'), NOW);
+    expect(record.security_mode).toBe('transparent');
+    expect(record.branch).toBe('trunk');
+    expect(record.client_version).toBe('0.3.0');
+    // Handing back a file is not writing one: the caller owns the commit it rides in.
+    expect(store.commits).toHaveLength(0);
+
+    // The recorded mode is the repository's answer; a later settings value must not overwrite it.
+    store.seed(storeConfigPath(PREFIX), file?.content ?? '');
+    const again = await storeConfigFileIfMissing({
+      store,
+      prefix: PREFIX,
+      chosenMode: 'vault',
+      now: () => Date.parse(NOW),
+    });
+    expect(again).toBeNull();
+  });
+
+  it('TC-P8-I02 refuses to guess for a repository that holds content without a record', async () => {
+    const index = mergeIndex(null, [
+      { id: 'src00001', kind: 'source', path: 'inbox/one.md', created_at: NOW, updated_at: NOW },
+    ]);
+    const store = new MemoryKnowledgeStore({ [indexPath(PREFIX)]: serializeIndex(index) });
+    const file = await storeConfigFileIfMissing({
+      store,
+      prefix: PREFIX,
+      chosenMode: 'transparent',
+      now: () => Date.parse(NOW),
+    });
+    // Fails closed: no record is invented for content that never recorded a tier.
+    expect(file).toBeNull();
+    expect(store.dump()[storeConfigPath(PREFIX)]).toBeUndefined();
+    expect(store.commits).toHaveLength(0);
   });
 });

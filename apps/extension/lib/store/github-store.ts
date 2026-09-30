@@ -12,13 +12,10 @@
  */
 
 import type { CkfRecord } from '../core/ckf';
-import { indexPath } from '../core/paths';
 import type { SecurityMode } from '../messages';
 import type { CryptoProvider } from '../security/crypto-key';
 import type { KeySession } from '../security/key-session';
-import { selectCodec, emptyIndex, findIndexItem, findIndexItemByKey, indexToFile, mergeIndex, parseIndex, type IndexFile } from './tier';
 import type { ContentCodec, IndexItem } from './codec';
-import type { VaultKdf } from './vault-codec';
 import {
   NotConfiguredError,
   NotFoundError,
@@ -26,13 +23,23 @@ import {
   ScopeError,
 } from './errors';
 import { createGithubApi, type FetchLike, type GithubApi } from './github-api';
-import type { CommitResult, DirEntry, KnowledgeStore, RepoFile, StoreProbe } from './types';
+import {
+  MAX_COMMIT_FILES,
+  PENDING_CARD_SEGMENT,
+  createRepoStore,
+  listIndexByKind,
+  type CommitRecordOptions,
+  type CommitRecordResult,
+  type RepoStore,
+} from './repo-store';
+import { emptyIndex, findIndexItem, findIndexItemByKey, indexToFile, selectCodec, type IndexFile } from './tier';
+import type { VaultKdf } from './vault-codec';
+import type { CommitResult, DirEntry, RepoFile, StoreProbe } from './types';
 
-export const MAX_COMMIT_FILES = 64;
-
-/** Matches `inbox/…` whether or not a repository prefix precedes it. */
-const INBOX_SEGMENT = /(?:^|\/)inbox\//u;
-const PENDING_CARD_SEGMENT = /(?:^|\/)cards\/pending\//u;
+// These moved to `repo-store.ts`, where the SSH face needs them too. Re-exported so every existing
+// importer keeps working: one definition, two transports.
+export { MAX_COMMIT_FILES, defaultCommitMessage } from './repo-store';
+export type { CommitRecordOptions, CommitRecordResult } from './repo-store';
 
 export interface GitHubStoreOptions {
   api: GithubApi;
@@ -45,49 +52,8 @@ export interface GitHubStoreOptions {
   now?: () => number;
 }
 
-export interface CommitRecordOptions {
-  message?: string;
-  /** Pre-fetched index, so a caller doing several reads does not pay for the same request twice. */
-  index?: IndexFile;
-  /**
-   * Files to commit **atomically** with the record — the search shards it changes (T5.7).
-   *
-   * A commit is the only atomic boundary this system has, so "the note is stored" and "the note can be
-   * found" must be the same commit. On a path collision the record and the index win: a shard may
-   * never shadow the note it indexes.
-   */
-  extraFiles?: readonly RepoFile[];
-}
 
-export interface CommitRecordResult {
-  commit: CommitResult;
-  path: string;
-  index: IndexFile;
-}
-
-/**
- * Commit message for a record.
- *
- * Vault mode deliberately omits the title: the message is stored in the repository's commit history
- * (and in every notification and webhook the host emits), so it must not carry the headline of the
- * page the user captured. Transparent mode keeps the readable message because that is the trade-off
- * the user opted into.
- */
-export function defaultCommitMessage(record: CkfRecord, mode: SecurityMode = 'transparent'): string {
-  if (mode === 'vault') return `${record.kind}: [${record.id}]`;
-  switch (record.kind) {
-    case 'source':
-      return `capture: ${record.title || record.url} [${record.id}]`;
-    case 'card':
-      return `distill: ${record.title} [${record.id}]`;
-    case 'topic':
-      return `topic: ${record.name} [${record.id}]`;
-    default:
-      return `review: ${record.id}`;
-  }
-}
-
-export class GitHubStore implements KnowledgeStore {
+export class GitHubStore implements RepoStore {
   readonly kind = 'github' as const;
   private readonly api: GithubApi;
   private readonly codec: ContentCodec;
@@ -95,6 +61,12 @@ export class GitHubStore implements KnowledgeStore {
   private readonly branch: string;
   private readonly prefix: string | null;
   private readonly acknowledged: boolean;
+  /**
+   * The record/index face, built lazily over THIS store. `createRepoStore` only calls the raw
+   * `probe`/`readFile`/`listDir`/`commitFiles` below it, so there is exactly one implementation of the
+   * index and record semantics — shared with the SSH transport instead of re-implemented for it (R7).
+   */
+  private facade: RepoStore | null = null;
 
   constructor(options: GitHubStoreOptions) {
     this.api = options.api;
@@ -109,12 +81,23 @@ export class GitHubStore implements KnowledgeStore {
     return this.codec;
   }
 
+  private repo(): RepoStore {
+    this.facade ??= createRepoStore(this, {
+      codec: this.codec,
+      prefix: this.prefix,
+      repoFullName: this.repoFullName,
+      branch: this.branch,
+      publicRepoAcknowledged: this.acknowledged,
+    });
+    return this.facade;
+  }
+
   /**
    * Human-openable URL for a stored file. Used when a capture was a duplicate, where there is no new
    * commit to link to.
    */
   fileUrl(path: string): string {
-    return `https://github.com/${this.repoFullName}/blob/${this.branch}/${path}`;
+    return this.repo().fileUrl(path);
   }
 
   /** Repository metadata, with the public-repo block applied. */
@@ -162,29 +145,20 @@ export class GitHubStore implements KnowledgeStore {
 
   /* ------------------------------ records ------------------------------ */
 
-  async readIndex(): Promise<IndexFile> {
-    return parseIndex(await this.api.readFile(indexPath(this.prefix)));
+  readIndex(): Promise<IndexFile> {
+    return this.repo().readIndex();
   }
 
-  async readRecord(path: string): Promise<CkfRecord> {
-    const text = await this.api.readFile(path);
-    if (text === null) throw new NotFoundError(`storage: no record at ${path}`);
-    return this.codec.decode(text);
+  readRecord(path: string): Promise<CkfRecord> {
+    return this.repo().readRecord(path);
   }
 
-  /**
-   * Dedup lookup. `url_key` wins over `content_key` because the same page captured twice is the
-   * common case, while identical text from a different page is usually a legitimate second capture.
-   */
-  async findExisting(
+  findExisting(
     urlKey: string,
     contentKey: string,
     index?: IndexFile,
   ): Promise<IndexItem | null> {
-    const resolved = index ?? (await this.readIndex());
-    const byUrl = findIndexItemByKey(resolved, 'url_key', urlKey);
-    if (byUrl) return byUrl;
-    return findIndexItemByKey(resolved, 'content_key', contentKey);
+    return this.repo().findExisting(urlKey, contentKey, index);
   }
 
   async findByUrlKey(urlKey: string, index?: IndexFile): Promise<IndexItem | null> {
@@ -192,39 +166,12 @@ export class GitHubStore implements KnowledgeStore {
     return findIndexItemByKey(resolved, 'url_key', urlKey);
   }
 
-  /**
-   * Write one record plus the updated index in a single commit (SC-F6-01).
-   *
-   * Order of operations matters: the write gate runs BEFORE encoding, so a blocked or under-scoped
-   * token never causes an encryption pass or a partial commit.
-   */
-  async commitRecord(
+  /** One record plus the updated index in a single commit (SC-F6-01); shared with the SSH face. */
+  commitRecord(
     record: CkfRecord,
     options: CommitRecordOptions = {},
   ): Promise<CommitRecordResult> {
-    await this.assertWritable();
-
-    const encoded = await this.codec.encodeRecord(record, this.prefix);
-    const current = options.index ?? (await this.readIndex());
-    const next = mergeIndex(current, [encoded.index]);
-
-    const files: RepoFile[] = [
-      { path: encoded.path, content: encoded.content },
-      indexToFile(next, this.prefix),
-    ];
-
-    const taken = new Set(files.map((file) => file.path));
-    for (const extra of options.extraFiles ?? []) {
-      if (taken.has(extra.path)) continue;
-      taken.add(extra.path);
-      files.push(extra);
-    }
-
-    const commit = await this.commitFiles(
-      files,
-      options.message ?? defaultCommitMessage(record, this.codec.mode),
-    );
-    return { commit, path: encoded.path, index: next };
+    return this.repo().commitRecord(record, options);
   }
 
   /** Rewrite just the index (used after an out-of-band change, e.g. a confirmed card). */
@@ -245,29 +192,13 @@ export class GitHubStore implements KnowledgeStore {
   }
 
   /** Inbox listing derived from the index, newest first. No content is read. */
-  async listInbox(limit = 20): Promise<IndexItem[]> {
-    return this.listByKind('source', INBOX_SEGMENT, limit);
+  listInbox(limit = 20): Promise<IndexItem[]> {
+    return this.repo().listInbox(limit);
   }
 
   /** Newest cards still awaiting confirmation. */
   async listPendingCards(limit = 20): Promise<IndexItem[]> {
-    return this.listByKind('card', PENDING_CARD_SEGMENT, limit);
-  }
-
-  /**
-   * Segment-aware filter: the repository path may or may not carry a user prefix, and a naive
-   * `includes('/inbox/')` check would silently miss the unprefixed case.
-   */
-  private async listByKind(
-    kind: IndexItem['kind'],
-    segment: RegExp,
-    limit: number,
-  ): Promise<IndexItem[]> {
-    const index = await this.readIndex();
-    return Object.values(index.items)
-      .filter((item) => item.kind === kind && segment.test(item.path))
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
-      .slice(0, Math.max(1, limit));
+    return listIndexByKind(await this.readIndex(), 'card', PENDING_CARD_SEGMENT, limit);
   }
 
   emptyIndex(): IndexFile {

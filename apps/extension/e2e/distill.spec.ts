@@ -99,7 +99,9 @@ test('TC-E2E-03 vault mode still distils (the card is encrypted, the flow is unc
     await page.click('.omnipilot-bubble [data-action="distill"]');
 
     await expect(page.locator('.omnipilot-toast')).toBeVisible();
-    await expect.poll(() => github.commitCount(), { timeout: 20_000 }).toBe(2);
+    // Three commits: the seeded tier choice's config, the source, and the card. The config comes first
+    // because a tier belongs to the repository, not to this browser profile (R8).
+    await expect.poll(() => github.commitCount(), { timeout: 20_000 }).toBe(3);
 
     const paths = [...github.files.keys()];
     expect(paths.some((path) => path.startsWith('cards/pending/') && path.endsWith('.md.enc'))).toBe(true);

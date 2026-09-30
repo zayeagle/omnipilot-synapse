@@ -20,6 +20,7 @@ import {
   type ExtensionResponse,
   type GithubSettingsPayload,
   type ProviderSettingsPayload,
+  type SecurityMode,
   type SyncPolicyPayload,
 } from '../../lib/messages';
 import type { CompanionState } from '../../lib/public-prefs';
@@ -27,6 +28,7 @@ import {
   authFormOf,
   authModeDisabled,
   authModeOptions,
+  cloneGuidance,
   companionStatusText,
   hasSshFormErrors,
   sshFormOf,
@@ -82,11 +84,13 @@ import {
   providerDefaultBaseUrl,
   providerFormOf,
   providerOptions,
+  needsTierChoice,
   saveStorageDisabled,
+  storageSaveBlocked,
+  tierChoiceOptions,
   searchResultRows,
   secretsPresence,
   settingsToForm,
-  storageSaveHint,
   syncPolicyPayload,
   transparentModeNeedsConfirm,
   validateProviderForm,
@@ -183,6 +187,11 @@ function main(): void {
       entry.card.root.hidden = !on;
       entry.button.setAttribute('aria-selected', on ? 'true' : 'false');
     }
+    // 同步 is the one surface that shows state the worker changes on its own — a background sync can
+    // record a conflict while this page sits open — so opening it re-reads instead of re-rendering
+    // whatever happened to be true at load. Without this the decision surface can show "0 conflicts"
+    // while the worker is holding one, which is the same class of lie as the old "never synced" row.
+    if (id === 'sync') void reloadSyncStatus();
   }
 
   /* ------------------------------- 模型 section ----------------------------- */
@@ -251,6 +260,15 @@ function main(): void {
   const localCloneNotice = el('p', 'warning', t('options.auth.ssh.localCloneNotice', null, LANG));
   const sshKeyHint = el('p', 'hint', t('options.auth.ssh.keyHint', null, LANG));
   const sshRepoRootHint = el('p', 'hint', t('options.auth.ssh.repoRootHint', null, LANG));
+  /* The prerequisite, made copy-pasteable: the exact command for THIS remote (T5.2). */
+  const cloneTitle = el('h4', 'card-title', t('options.auth.ssh.clone.title', null, LANG));
+  const cloneHint = el('p', 'hint', t('options.auth.ssh.clone.hint', null, LANG));
+  const cloneCommandNode = el('code', 'command');
+  const cloneCopyButton = button(t('options.auth.ssh.clone.copy', null, LANG), 'link');
+  const cloneRow = el('div', 'row');
+  cloneRow.append(cloneCommandNode, cloneCopyButton);
+  const cloneBlock = el('div', 'card-body');
+  cloneBlock.append(cloneTitle, cloneHint, cloneRow);
   const sshTestButton = button(t('options.auth.ssh.testConnection', null, LANG));
   const sshGrid = el('div', 'grid');
   /** One SSH input plus the inline field message the validator fills in. */
@@ -271,6 +289,7 @@ function main(): void {
   sshBlock.append(
     el('h3', 'card-title', t('options.auth.ssh.title', null, LANG)),
     localCloneNotice,
+    cloneBlock,
     sshGrid,
     sshKeyHint,
     sshRepoRootHint,
@@ -287,6 +306,36 @@ function main(): void {
   branchNoticeNode.hidden = true;
   createBranchButton.hidden = true;
 
+  /*
+   * First run: the content tier is a decision, not a default (T7). The question is asked once, here,
+   * because this card is what creates the repository; the 安全 page keeps the live control afterwards.
+   */
+  let tierPicked = false;
+  const tierTitle = el('h3', 'card-title', t('options.store.tier.title', null, LANG));
+  const tierHint = el('p', 'hint', t('options.store.tier.hint', null, LANG));
+  const tierChoices = el('div', 'grid');
+  for (const option of tierChoiceOptions(LANG)) {
+    const label = el('label', 'row');
+    const input = el('input');
+    input.type = 'radio';
+    input.name = 'omnipilot-content-tier';
+    input.value = option.value;
+    const text = el('span');
+    text.append(el('strong', undefined, option.label), el('span', 'hint', option.consequence));
+    label.append(input, text);
+    input.addEventListener('change', () => {
+      // One value, one live control: this step answers the question the 安全 page owns.
+      modeSelect.select.value = option.value;
+      tierPicked = true;
+      renderStore();
+    });
+    tierChoices.appendChild(label);
+  }
+  const tierSummary = el('p', 'hint');
+  const tierBlock = el('div', 'card-body');
+  tierBlock.append(tierTitle, tierHint, tierChoices);
+  tierSummary.hidden = true;
+
   const visibilityBadge = el('p', 'badge');
   const probeButton = button(t('options.testConnection', null, LANG));
   const probeHint = el('p', 'hint', t('options.store.probeHint', null, LANG));
@@ -299,6 +348,8 @@ function main(): void {
   storeMessage.dataset['kind'] = 'error';
   const saveStoreButton = button(t('options.save', null, LANG), 'primary');
   storeCard.body.append(
+    tierBlock,
+    tierSummary,
     authModeField,
     sshBlock,
     patInput.root,
@@ -508,7 +559,9 @@ function main(): void {
 
   /** Rebuild the mode picker from the availability we know, preserving the selected value. */
   function renderAuthModes(): void {
-    const selected = authModeSelect.select.value;
+    // On the first render the picker is empty, so the stored mode is what it must show; afterwards
+    // the live selection wins, because that is what the user is looking at.
+    const selected = authModeSelect.select.value || form.authMode;
     clear(authModeSelect.select);
     for (const option of authModeOptions(availability(), LANG)) {
       const node = el('option', undefined, option.label);
@@ -581,6 +634,23 @@ function main(): void {
       control.error.hidden = !sshSelected || message.length === 0;
       control.error.textContent = sshSelected ? message : '';
     }
+    // The clone command is rebuilt from what the form currently says, so the user can type the
+    // repository and the path in either order and always copy a command that matches the screen.
+    const guidance = cloneGuidance(
+      {
+        host: form.ssh.host,
+        user: form.ssh.user,
+        owner: form.owner,
+        repo: form.repo,
+        repoRoot: form.ssh.repoRoot,
+      },
+      LANG,
+    );
+    cloneBlock.hidden = !sshSelected;
+    cloneCommandNode.textContent = guidance.command;
+    cloneRow.hidden = guidance.command.length === 0;
+    cloneHint.hidden = guidance.command.length > 0;
+
     // A stored ssh choice with no companion stays selected-but-disabled, so the hint explains why
     // instead of the page silently reverting the user's choice.
     if (authModeDisabled(form.authMode, availability())) {
@@ -618,9 +688,22 @@ function main(): void {
       probe ? probe.visibility : 'unknown',
     )}`;
 
-    const disabled = saveStorageDisabled(probe, ackCheckbox.input.checked);
-    saveStoreButton.disabled = disabled;
-    const hint = storageSaveHint(probe, ackCheckbox.input.checked, LANG);
+    // The question is only settled once it has been saved; a click unlocks the save but leaves the
+    // step on screen, so the user still sees what they are agreeing to.
+    const tierUnanswered = needsTierChoice({ chosen: form.contentTierChosen });
+    const tierBlocksSave = needsTierChoice({ chosen: form.contentTierChosen || tierPicked });
+    tierBlock.hidden = !tierUnanswered;
+    tierSummary.hidden = tierUnanswered;
+    if (!tierUnanswered) {
+      const settled = tierChoiceOptions(LANG).find((option) => option.value === form.securityMode);
+      tierSummary.textContent = t(
+        'options.store.tier.chosen',
+        { mode: settled ? settled.label : form.securityMode },
+        LANG,
+      );
+    }
+    saveStoreButton.disabled = saveStorageDisabled(probe, ackCheckbox.input.checked) || tierBlocksSave;
+    const hint = storageSaveBlocked(probe, ackCheckbox.input.checked, tierBlocksSave, LANG);
     storeMessage.hidden = hint.length === 0;
     storeMessage.textContent = hint;
   }
@@ -699,6 +782,13 @@ function main(): void {
     for (const row of rows) {
       const item = el('div', 'row');
       item.append(el('span', 'inbox-title', row.path));
+      // Name the sibling: the decision is only concrete if the user can see WHICH file holds their
+      // version. Without it the three buttons ask them to trust a convention instead of a path.
+      if (row.conflictPath.length > 0) {
+        item.append(
+          el('span', 'hint', t('options.sync.conflict.sibling', { path: row.conflictPath }, LANG)),
+        );
+      }
       // No resolution message type exists yet, so each action arms a sync rather than pretending to
       // resolve: the handler keeps both versions and the hint next to the buttons says so.
       for (const choice of ['mine', 'theirs', 'both'] as const) {
@@ -757,6 +847,17 @@ function main(): void {
     transparentConfirm.input.checked = false;
     ackCheckbox.input.checked = form.publicRepoAcknowledged;
     aiAuthorize.input.checked = form.aiAuthorized;
+    /*
+     * The SSH block is stored settings too. Without this the local clone path the user saved is
+     * invisible — and `syncForm` would then read the blank field back as "no path" (T5.2).
+     */
+    sshHostControl.input.value = form.ssh.host;
+    sshUserControl.input.value = form.ssh.user;
+    sshKeyControl.input.value = form.ssh.keyRef;
+    sshRepoRootControl.input.value = form.ssh.repoRoot;
+    // The picker's options already exist (paintDefaults builds them), so the stored mode can be
+    // selected here; `renderAuthModes` then rebuilds without losing it.
+    authModeSelect.select.value = form.authMode;
   }
 
   /* -------------------------------- providers ------------------------------ */
@@ -835,7 +936,23 @@ function main(): void {
 
   async function saveStorageSection(): Promise<void> {
     syncForm();
+    // The tier gate the button reflects, re-checked here: a disabled button is an affordance, not a
+    // boundary, and the answer is what makes this repository's contents predictable.
+    if (needsTierChoice({ chosen: form.contentTierChosen || tierPicked })) {
+      renderStore();
+      return;
+    }
     if (saveStorageDisabled(probe, ackCheckbox.input.checked)) {
+      renderStore();
+      return;
+    }
+    // The mode picker lives in this card, so its two refusals live here too: an unavailable companion
+    // or an incomplete SSH block stops the save rather than being stored and failing at the first sync.
+    if (authModeDisabled(form.authMode, availability())) {
+      showErrorCode('nativeUnavailable');
+      return;
+    }
+    if (form.authMode === 'ssh' && hasSshFormErrors(validateSshForm(currentSshForm(), LANG))) {
       renderStore();
       return;
     }
@@ -846,12 +963,19 @@ function main(): void {
       return;
     }
     clearTypedSecret(patInput.input, 'pat');
-    // The picker is part of 存储: a saved section must not leave a mode change behind unsaved.
-    const storedMode = await storeAuthMode(form.authMode);
-    if (!storedMode.ok) {
-      showErrorCode(storedMode.code);
+    // The picker answers the mode and the tier step answers the tier: ONE request for both, because two
+    // `settings.security` round trips in the same save trip the router's rate limiter — and two calls
+    // carrying one decision are two calls that can disagree.
+    const stored = await send({
+      type: 'settings.security',
+      payload: { authMode: form.authMode, securityMode: form.securityMode, contentTierChosen: true },
+    });
+    if (!stored.ok) {
+      showErrorCode(stored.code);
       return;
     }
+    form.contentTierChosen = true;
+    tierPicked = true;
     renderStore();
     toastSaved();
   }
@@ -945,33 +1069,20 @@ function main(): void {
     renderStore();
   }
 
-  async function saveAuthSection(): Promise<void> {
-    syncForm();
-    if (authModeDisabled(form.authMode, availability())) {
-      showErrorCode('nativeUnavailable');
-      return;
+
+  /**
+   * Hand the user the clone command. A refused clipboard is not a failure of the feature — the
+   * command stays on screen and selectable — but it must not pass for success either.
+   */
+  async function copyCloneCommand(): Promise<void> {
+    const command = cloneCommandNode.textContent ?? '';
+    if (command.length === 0) return;
+    try {
+      await navigator.clipboard.writeText(command);
+      toast.show(t('options.auth.ssh.clone.copied', null, LANG), 'success');
+    } catch {
+      toastError(t('options.auth.ssh.clone.copyFailed', null, LANG));
     }
-    if (form.authMode === 'ssh') {
-      const errors = validateSshForm(currentSshForm(), LANG);
-      if (hasSshFormErrors(errors)) {
-        renderStore();
-        return;
-      }
-    }
-    const saved = await send({ type: 'settings.github', payload: currentGithubPayload() });
-    if (!saved.ok) {
-      showErrorCode(saved.code);
-      return;
-    }
-    clearTypedSecret(patInput.input, 'pat');
-    const stored = await storeAuthMode(form.authMode);
-    if (!stored.ok) {
-      showErrorCode(stored.code);
-      return;
-    }
-    branchNoticeView = null;
-    renderStore();
-    toastSaved();
   }
 
   /* ----------------------------------- sync -------------------------------- */
@@ -1352,6 +1463,7 @@ function main(): void {
   ]) {
     input.addEventListener('input', () => renderStore());
   }
+  cloneCopyButton.addEventListener('click', () => void copyCloneCommand());
   sshTestButton.addEventListener('click', () => void testSshConnection());
   branchCheckButton.addEventListener('click', () => void checkBranch());
   createBranchButton.addEventListener('click', () => void createBranch());
@@ -1409,6 +1521,9 @@ function main(): void {
     syncOutcomeBadge.dataset['kind'] = 'unknown';
     syncOutcomeBadge.textContent = t('options.sync.outcome.never', null, LANG);
     sshBlock.hidden = true;
+    cloneBlock.hidden = true;
+    tierBlock.hidden = true;
+    tierSummary.hidden = true;
     branchNoticeNode.hidden = true;
     createBranchButton.hidden = true;
     companionStatus.textContent = companionStatusText(companion, LANG);

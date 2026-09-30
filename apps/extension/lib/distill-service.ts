@@ -23,7 +23,7 @@ import type { AiLedger } from './queues';
 import { scrub, scrubError } from './security/redact';
 import type { ExtensionSettings, SecretPayload } from './settings-store';
 import type { CkfRecord } from './core/ckf';
-import type { GitHubStore } from './store/github-store';
+import type { RepoStore } from './store/repo-store';
 import type { RepoFile } from './store/types';
 
 export interface DistillOutcome {
@@ -39,7 +39,7 @@ export function isDistillSkipped(result: DistillResult): result is { skipped: Di
 }
 
 export interface DistillServiceOptions {
-  store: GitHubStore;
+  store: RepoStore;
   ledger: AiLedger;
   settings: ExtensionSettings;
   secrets: SecretPayload;
@@ -80,7 +80,7 @@ export function assertEndpointTrusted(
 }
 
 export class DistillService {
-  private readonly store: GitHubStore;
+  private readonly store: RepoStore;
   private readonly ledger: AiLedger;
   private readonly settings: ExtensionSettings;
   private readonly secrets: SecretPayload;

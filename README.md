@@ -28,8 +28,8 @@ extension treats every credential as radioactive.
 | Inbox in a GitHub repository | `inbox/YYYY/MM/`, date-partitioned, atomic commits |
 | Canonical Knowledge Format | Markdown + YAML frontmatter, adapter-agnostic, no vendor lock |
 | Duplicate detection | canonical-URL key + content fingerprint; a repeat capture writes nothing |
-| Content tiers | **透明仓** (plain Markdown, the default for a *new* store) or **保险库** (AES-GCM). An absent or unreadable store config fails **closed** to vault — one unreadable byte never downgrades an encrypted repository to plaintext. |
-| Two authorization modes | **access token** (GitHub REST) or **SSH** through a local companion process driving your own `git`/`ssh`. No key material ever reaches the extension. |
+| Content tiers | **透明仓** (plain Markdown) or **保险库** (AES-GCM) — asked **once, explicitly**, the first time you save 存储: 保存 stays disabled until you answer, and the answer is recorded in the repository itself (`.omnipilot/config.json`). An absent or unreadable store config fails **closed** to vault — one unreadable byte never downgrades an encrypted repository to plaintext. |
+| Two authorization modes | **access token** (GitHub REST) or **SSH** through a local companion process driving your own `git`/`ssh`. No key material ever reaches the extension. SSH shows the exact `git clone` command for your remote with one click to copy it, and refuses a relative or `..`-bearing clone path on the settings screen instead of failing later in your terminal. |
 | Branch selection | `main` by default, overridable in 存储; validated against the remote with a create action when it does not exist. |
 | Automatic push **and** pull | A local decoded cache plus a reconciliation engine: remote drift is pulled, local changes are pushed, and both versions survive a conflict as a `<name>.conflict-<stamp>.md` sibling. |
 | Retrieval | Keyword index (`search/*.json` shards, CJK bigrams) + a readable `NOTES.md` catalogue; the shards are committed in the same commit as the note they index. |
@@ -41,8 +41,8 @@ extension treats every credential as radioactive.
 | Secret custody | PBKDF2-SHA256 → AES-GCM vault, session unlock, no persisted passphrase |
 | Offline tolerance | captures queue and replay when the network (or the vault) is back |
 
-**Verification status**: 591 unit + 114 integration (extension) and 48 unit + 8 system (companion) tests pass, plus a
-Playwright end-to-end suite covering capture, distill, sync drift/no-op/conflict, SSH degradation and search;
+**Verification status**: 600 unit + 120 integration (extension) and 48 unit + 8 system (companion) tests pass, plus a
+**19 Playwright end-to-end tests** covering capture, distill, sync drift/no-op/conflict, the three-way conflict decision, the proposal decision surface, the review queue, the first-run tier gate, SSH degradation and search;
 `npm run ci` and `npm run ci:all` are green.
 See the [test report](docs/omnidev-state/main/05-test-report.md) and
 [security audit](docs/omnidev-state/main/07-security-audit.md).
@@ -91,11 +91,15 @@ Firefox: `npm run build:firefox` and load `.output/firefox-mv2/manifest.json` fr
    repository and reports visibility and scope problems. A public repository shows a red warning and
    cannot be saved until you tick the acknowledgement.
 3. **Authorization (optional SSH).** 存储 → 授权方式: 令牌 (token, the default) or **SSH**. SSH requires
-   the companion and a local clone path; the picker shows whether the companion is installed. 检查分支
-   validates the branch against the remote and offers to create it.
-4. **Content tier.** A brand-new store defaults to 透明仓 (readable Markdown) — accept that the host can
-   read everything. Choose 保险库 for AES-GCM. An existing repository keeps whatever its
-   `.omnipilot/config.json` records, and an unreadable config falls back to 保险库.
+   the companion and a local clone path; the picker shows whether the companion is installed, and the
+   SSH block prints the one command that creates that clone (copy it, run it, paste the same directory
+   back). 检查分支 validates the branch against the remote and offers to create it.
+4. **Content tier — asked once, not defaulted.** The first save of 存储 asks the question outright:
+   透明仓 (readable Markdown, so anyone who can open the repository can read it) or 保险库 (AES-GCM, and
+   a lost passphrase cannot be recovered). 保存 stays disabled until you pick one; the answer is written
+   into the repository as `.omnipilot/config.json` together with its first content, so every client reads
+   the same answer. An existing repository keeps whatever that file records, an unreadable config falls
+   back to 保险库, and later changes live under 安全.
 5. **Models (optional).** Settings → 模型: provider, model, API key. A custom base URL needs the trust
    checkbox and a runtime host permission.
 6. **AI authorization (optional).** Settings → AI 授权: turn egress on. Until you do, `提炼` captures
@@ -110,6 +114,7 @@ Firefox: `npm run build:firefox` and load `.output/firefox-mv2/manifest.json` fr
 
 ```
 .omnipilot/config.json          # { schema_version, security_mode, branch, sync_policy, client_version }
+                                # written with the first content commit; never overwrites a recorded tier
 index.json                      # ids, kinds, paths, timestamps + dedup keys only — also the remote manifest
 search/<prefix>.json            # postings shards, committed with the note that changed them
 NOTES.md                        # readable catalogue (topics, counts, recent cards)

@@ -49,6 +49,8 @@ export default defineBackground(() => {
 
   const context: BackgroundContext = {
     settings,
+    // Recorded in `.omnipilot/config.json` so the repository says which client wrote it last.
+    clientVersion: browser.runtime.getManifest().version,
     queue,
     ledger,
     session,

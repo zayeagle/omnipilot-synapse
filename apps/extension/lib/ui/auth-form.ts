@@ -11,6 +11,7 @@
  * renders rather than an exception the user reaches by saving a form that was never going to work.
  */
 
+import { sshRemoteUrl } from '../auth/types';
 import { t, type Lang } from '../i18n';
 import {
   LIMITS,
@@ -241,6 +242,9 @@ export function validateSshForm(ssh: SshForm, lang?: Lang): SshFormErrors {
   if (repoRoot.length === 0) errors.repoRoot = t('options.auth.ssh.repoRootRequired', null, lang);
   else if (repoRoot.length > LIMITS.pathPrefixChars) {
     errors.repoRoot = t('options.auth.ssh.repoRootInvalid', null, lang);
+  } else {
+    // The two shapes that would otherwise fail inside the companion; caught on this screen instead.
+    errors.repoRoot = repoRootProblemText(repoRootError(repoRoot), lang);
   }
   return errors;
 }
@@ -402,4 +406,68 @@ export function repoRootError(repoRoot: string): RepoRootProblem {
   if (!/^(?:[A-Za-z]:[/\\]|[/\\]|~[/\\])/u.test(value)) return 'not-absolute';
   if (value.split(/[/\\]+/u).includes('..')) return 'has-parent';
   return null;
+}
+
+/** The sentence for a {@link RepoRootProblem}; empty when the path is fine. */
+export function repoRootProblemText(problem: RepoRootProblem, lang?: Lang): string {
+  switch (problem) {
+    case 'empty':
+      return t('options.auth.ssh.repoRootRequired', null, lang);
+    case 'not-absolute':
+      return t('options.auth.ssh.repoRootNotAbsolute', null, lang);
+    case 'has-parent':
+      return t('options.auth.ssh.repoRootHasParent', null, lang);
+    default:
+      return '';
+  }
+}
+
+/**
+ * The remote URL as the user's own `git` would spell it, or empty when the repository is not named yet.
+ *
+ * `sshRemoteUrl` interpolates unconditionally, so an unnamed repository would produce the very
+ * convincing `git@github.com:/.git`; refusing to build half a command is the whole point here.
+ */
+export function sshRemoteUrlFor(
+  host: string,
+  user: string,
+  owner: string,
+  repo: string,
+): string {
+  const hostText = host.trim();
+  const userText = user.trim();
+  const ownerText = owner.trim();
+  const repoText = repo.trim();
+  if (
+    hostText.length === 0 ||
+    userText.length === 0 ||
+    ownerText.length === 0 ||
+    repoText.length === 0
+  ) {
+    return '';
+  }
+  return sshRemoteUrl(hostText, userText, ownerText, repoText);
+}
+
+/** What the SSH clone block renders: the exact command, and why the path is unusable (if it is). */
+export interface CloneGuidance {
+  /** Empty while either half of the command is unknown — a half-built command looks runnable. */
+  command: string;
+  remoteUrl: string;
+  problem: RepoRootProblem;
+  problemText: string;
+}
+
+export function cloneGuidance(
+  input: { host: string; user: string; owner: string; repo: string; repoRoot: string },
+  lang?: Lang,
+): CloneGuidance {
+  const remoteUrl = sshRemoteUrlFor(input.host, input.user, input.owner, input.repo);
+  const problem = repoRootError(input.repoRoot);
+  return {
+    command: cloneCommand(remoteUrl, input.repoRoot),
+    remoteUrl,
+    problem,
+    problemText: repoRootProblemText(problem, lang),
+  };
 }

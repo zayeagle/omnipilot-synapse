@@ -774,3 +774,115 @@ AGENTS.md 的基线门槛从 543/111 上调到 **593/115**（E2E 12 不变），
 - 计划文件里的旧数字（543/111/381/455）：**无残留**（已随门禁更新替换）。
 - 剩余命中全部落在**历史日志**里，属正常（append-only 日志中的历史待办本就不该被改写）；其中两处可能被误读为「仍未完成」，已就地标注：旧 Resume Instructions 标题补「SUPERSEDED」；第 8 轮交接清单里那条删文案的待办标注「已于第 19 轮完成」。
 
+
+### T4.3 完成 —— 失败不再只给原因，也给出唯一动作（2026-09-29）
+
+- **数据链路补齐**：SyncStatusView 增 failureCode（由 sync.status 的 state.lastErrorCode 读取；空回包时为 null）。语义分工明确：**码**来自 worker（封闭 union），**句子**由界面自己的表产生——worker 的原句永不渲染。
+- **动作接线**：popup 同步行新增按钮，文案取自 guidance.<code>.action，行为由 failure.target 决定：retry → 复用既有同步按钮（单一入口）；storage/companion → 打开 options；unlock → 同样打开 options（popup 没有口令输入，**不假装**有一个）；**none → 按钮隐藏**（不给无用的按钮也是一种诚实）。
+- **过程中一次真实事故**：第一次改动用正则定位插入点，插错到空回包分支，导致 tsc 同时报「重复属性 + raw 可能为 null + 另一分支缺字段」三条错。读代码后已精确修复。教训与本次需求同源：**结构化代码要用结构化编辑（精确锚点/行号），不要用正则猜位置**——猜错时编译器会兜住，但兜住之前已经留下了破损状态。
+
+
+**T4.3 验证（本轮实测）**：extension tsc 0 · UNIT **593/52** · INT **115/13** · build 0 · `assert:content` OK · E2E 见上一条运行结果。
+
+### 错误词典合并（B 组，2026-09-29）
+
+`ERROR_GUIDANCE.titleKey` 改为复用既有的 `error.<code>` 家族，删除 23 个重复的 `guidance.<code>` 键（两本字典共 46 行）；**动作**仍用新键 `guidance.<code>.action`（这是本次新增的语义，无既有对应）。`describeError` 的语义与 8 处断言一行未动。
+
+随之把三处断言从「字面文案」改为「性质断言」：**状态行必须出现一句翻译后的句子、且永不出现键名**——这比记住某句译文更能守住「失败可读」的本意。
+
+验证：extension tsc 0 · 全量 UNIT 绿（见本轮实测）。
+
+**本轮 B 组验证**：extension tsc 0 · UNIT **593/52** · INT **115/13** · build 0 · `assert:content` OK。
+### T5.2/T5.3 — SSH 克隆引导接线（2026-09-29）
+
+- `lib/ui/auth-form.ts`：新增 `repoRootProblemText` / `sshRemoteUrlFor` / `cloneGuidance`，并把 `repoRootError` 接进 `validateSshForm` —— 路径的三种坏形状（空 / 相对 / 含 `..`）现在在**我们自己的界面**上给出人话，而不是等 companion 拒绝。
+- `entrypoints/options/main.ts`：存储页 SSH 区块新增「先创建本地克隆」一步：命令由当前表单的 host/user/owner/repo **拼出**（仓库名缺失时整条命令不显示 —— 半截命令看起来可执行，却会在用户终端里失败），一键复制，复制被拒时给可见的失败提示。
+- **同时发现并修掉两个既有缺陷**（都属本轮主题「界面在说谎」）：
+  1. `applyFormToInputs` 从未把 `ssh.*` 写回输入框 —— 用户保存过的本地克隆路径在界面上**看不见**，而 `syncForm` 又会把空输入读成「没有路径」；
+  2. 授权方式选择器在首帧被 `paintDefaults` 填成 `token` 后，永远不会再反映**已存储**的 `ssh` 模式。
+- 测试：`lib/ui/ssh-clone.test.ts` 增 3 条（TC-P6-U01…U05）；`lib/ui/render.test.ts` 增 1 条挂载断言（命令文本 + 复制按钮 + 相对路径在我们这边被拒）。
+
+### T7.1/T7.2 — 首启内容档位：一次显式选择，而不是一个默认（2026-09-29）
+
+- **设置**：`ExtensionSettings.contentTierChosen`（缺省 false，只认显式 `true`），随 `settings.security` 传递 —— **没有新增 message type**。
+- **纯逻辑**（`lib/ui/format.ts`）：`needsTierChoice` / `tierChoiceOptions` / `storageSaveBlocked`。判据与 `resolveTier` 同源：**已记录 → 不问；有内容无记录 → 必须问；新仓库 → 没选过就问**。
+- **界面**：存储页新增「内容档位（只需选一次）」，两个选项各带一句**人话后果**（谁能读到 / 口令丢了会怎样）；未选择前**保存被拒绝**，选择后解锁，保存成功后折叠成一行摘要；日常切换仍归「安全」页（一个值，一个活控件 + 一次性的首启确认）。
+- **仓库侧记录**：`storeConfigFileIfMissing`（`lib/store/tier.ts`）返回「这个仓库还缺的 `.omnipilot/config.json`」，由 `CaptureService.bootstrap` 随**捕获自身的那一次提交**写入（`extraFiles`）—— 一次提交而不是两次，且提交失败不会留下半配置的仓库。已记录档位、或有内容但无记录时返回 `null`：**永不覆盖、永不猜**。
+- **设置里的选择与仓库里的记录不会互相打架**：仓库记录优先（`resolveTier`），选择只决定「新仓库用哪一档」；`client_version` 现在真的会写进去（`BackgroundContext.clientVersion`）。
+
+### 断言与夹具变更记录（A6，2026-09-29）
+
+本轮改了三处既有断言/夹具，逐条记理由：
+
+1. `lib/ui/render.test.ts` 的 `settings.export` 夹具新增 `contentTierChosen: true` —— 该夹具描述的是**已完成首启**的安装，档位门禁有自己的用例。
+2. `lib/ui/format.test.ts` 的 `settingsToForm` 期望对象新增 `contentTierChosen: false` —— 源设置里没有这个字段，表单必须读成「未回答」，这正是 T7 的语义。
+3. `e2e/helpers.ts` 的 `seedSettings` 现在带上 `contentTierChosen: true`（可用 `tierUnchosen: true` opt-out）—— 其余 E2E 不是关于首启门禁的，不该被它拦住。
+
+**为什么没有改任何 commit 计数断言**：档位记录被**折进捕获自己的提交**，所以既有 `commitCount` 断言（1/2）全部保持原样。
+这也是选择该实现方式的原因之一：一个只为记录元数据的额外提交会改变每一个既有断言的语义 —— 而「为了新功能去改一堆无关断言」正是本轮一直在消灭的那类噪音。
+
+### 本轮验证（2026-09-29，逐条实测）
+
+| 层 | 命令 | 结果 |
+|----|------|------|
+| extension 类型检查 | `npx tsc --noEmit` | **0** |
+| extension UNIT | `npx vitest run` | **600 / 52 files**（基线 593） |
+| extension INT | `vitest run --config vitest.int.config.ts` | **117 / 13 files**（基线 115） |
+| extension 构建 | `npm run build` | **0**（388.57 kB） |
+| 内容包断言 | `npm run assert:content` | **OK** |
+| companion 类型检查 | `npx tsc --noEmit` | **0** |
+| companion UNIT | `npx vitest run` | **48 / 6 files** |
+| companion SYS | `npm run test:sys` | **8 / 1 file**（真实进程 + 真实裸仓库） |
+
+companion 本需求未改动任何源码，因此它的绿是「没被顺手破坏」的证据，不是新工作的证据。**零 git 提交（B.16）**。
+### 深度审计后的修复：授权模式 + 档位契约（2026-09-30，req-2026-09-30-synapse-auth-tier-integrity）
+
+**审计发现（证据见 session-log 的 Phase 0 块）**：P0 SSH 授权模式只通了一半（`resolveStore` 硬要求 PAT，9 个 handler 因此失效，而 `isConfigured` 说"已配置"）；P1 仓库记录的档位运行时从不被读取（明文可写进 vault 仓库）。
+
+**修复（G0/G1）**：
+
+- **一个门面两种模式**：新增 `lib/store/repo-store.ts`（`RepoStore` + `createRepoStore`）。`GitHubStore` 内部改为**委托**同一个门面，SSH 的 `GitTransportStore` 也用它 → 索引/记录的语义只有一份实现。
+- **`resolveStore` 走 `resolveAuth`**：token 与 SSH 返回同一形状；`resolveSyncRemote` 与它共用同一次解析（同步与其他 handler 不可能用不同的模式）。
+- **档位以仓库记录为准**：`resolveRepo` 先 `loadStoreConfig`，以结果的 mode 构造 codec/仓库；本机设置只作为**新仓库**的回落。
+- **档位变更是一次仓库操作**：`settings.security` 的 `securityMode` 变化走 `switchTier` —— 有内容即拒绝（新错误码 `tierLocked` + 双语原因 + 动作），空仓库则把选择写进 `.omnipilot/config.json`。
+- **顺手修掉的两个同类缺陷**：① 存储页保存时 `probeCandidate` 没有 token 就抛错 → **SSH-only 配置根本保存不了**（现在 best-effort，返回 null，由页面自己的"测试连接"验证）；② router 的 `ERROR_CODES` 手写清单漏了 5 个已声明码（`nativeUnavailable`/`protocolMismatch`/`gitFailed`/`syncConflict`/`indexUnavailable`）→ 声明码被静默改写成 `unknown`，界面上的指引全部丢失。现在它由 `Record<ErrorCode, true>` 推导，**编译器不允许漏项**。
+
+### 断言变更记录（A6，2026-09-30）
+
+档位选择现在会写进仓库（`R8`），因此三处**提交计数**断言变了，逐条记理由：
+
+1. `e2e/auth.spec.ts`：种子里的 vault 选择带来 1 次 config 提交 → SSH 被拒后是 1 次（原 0），token 捕获后是 2 次（原 1）。
+2. `e2e/distill.spec.ts`：vault 用例 2 → 3 次（config + 源 + 卡片）。
+3. `lib/store/tier.int.test.ts`：`TierMigrationRequiredError` 的码从 `validation` 改为 `tierLocked`。
+
+### 修复轮验证（2026-09-30）
+
+| 层 | 结果 |
+|----|------|
+| extension tsc / UNIT / INT | 0 · **600** · **120**（+3 新用例） |
+| extension E2E | **19 passed** |
+| build / assert:content | 0（392.77 kB）· OK |
+| companion tsc / UNIT / SYS | 0 · **48** · **8** |
+
+### E2E 补齐（T2.7 / T3.5 / T7.3，2026-09-29 第 42 轮）
+
+三个 P0/首启流程现在有了**真实浏览器**证据，而这一步抓到的四件事都是前 600 个单测抓不到的：
+
+| # | 发现 | 性质 | 处置 |
+|---|------|------|------|
+| 1 | 存储页保存时连发两次 `settings.security`（授权方式 + 档位），第二次被限流拒绝 → 保存失败 | **本轮引入的缺陷**，由 E2E 当场抓住 | 合并为**一次**请求（一个决定，一次往返）。恰好印证 `messages.ts` 里那句注释：两次往返是可以互相矛盾的 |
+| 2 | `saveAuthSection` 是**死代码**（无任何调用点），而档位持久化最初落在了它里面 → 界面上「选择档位」根本不会落盘 | 既有死代码 + 本轮错位 | 删除该死函数，并在唯一真实的保存路径 `saveStorageSection` 上补齐它原本的两道守卫（companion 不可用 / SSH 表单不完整） |
+| 3 | 同步页签**不会重新读取**状态：后台同步刚记下冲突时，界面仍显示「冲突 0」，而 worker 手里有一个 | 既有缺陷（决策面会说谎） | 页签激活时重读 `sync.status`。这也解释了子代理此前「同一页面 `sync.status` 有冲突、界面却是 0」的观察 |
+| 4 | 冲突行只显示原路径，不显示**持有自己那一版的兄弟路径** | T3.4 的「摘要」缺项 | 行内补一句 `options.sync.conflict.sibling`（双语），让三选一面对的是路径而不是约定 |
+
+**新增 E2E**：`e2e/cards.spec.ts`（TC-P3-E01 两条）· `e2e/review-journey.spec.ts`（TC-P9-E01 两条）· `e2e/first-run.spec.ts`（TC-P8-E01 一条）· `e2e/sync.spec.ts` 增两条（TC-P4-E01：保留我的 → 原文路径换回我的、远端版归档到 `archive/conflicts/`、兄弟路径留墓碑；两者都留 → 不提交、两版都在）。
+
+**一条值得记住的测试环境约束**：router 的凭据预算是 **12 次 / 每标签页 / 每分钟**，而 options 页每次加载就要花掉约 5 次。因此「在同一个标签页里先 seed 再点保存」或「加载后再 reload」都会把一次合法保存推进 `rateLimited`。E2E 的解法是**用独立的标签页 seed 后关闭**，断言页保持干净预算 —— 这不是产品缺陷，但它决定了这类 spec 该怎么写。
+
+### 第一次 E2E 全量（2026-09-29）
+
+| 层 | 命令 | 结果 |
+|----|------|------|
+| extension E2E | `npx playwright test` | **19 / 19 passed**（基线 12；新增 7 条） |
+
+

@@ -537,6 +537,58 @@
       "platform": "dsh",
       "requirement_id": "req-2026-09-29-synapse-workflow-elegance",
       "detail": "two axes (8 stages x 5 traits); principles doc + AGENTS.md; spec v5 / design v5 / test-plan v4 / plan v5"
+    },
+    {
+      "type": "task_group_complete",
+      "at": "2026-09-29T19:40:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "requirement_id": "req-2026-09-29-synapse-workflow-elegance",
+      "group": "T5.2/T5.3",
+      "detail": "SSH clone guidance wired into the storage tab (command + copy + path verdict); also fixed two pre-existing UI lies: ssh.* fields never repopulated on load, and the auth-mode picker never reflected the stored mode"
+    },
+    {
+      "type": "task_group_complete",
+      "at": "2026-09-29T19:40:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "requirement_id": "req-2026-09-29-synapse-workflow-elegance",
+      "group": "T7.1/T7.2",
+      "detail": "first-run content tier is an explicit one-step choice (contentTierChosen on settings.security, no new message type); storeConfigFileIfMissing rides the capture commit and never overwrites a recorded mode"
+    },
+    {
+      "type": "assertion_change",
+      "at": "2026-09-29T19:40:00+08:00",
+      "reason": "A6: the tier gate and the new form field change three fixtures (render.test.ts export fixture, format.test.ts settingsToForm expectation, e2e seedSettings) — recorded rather than silently adjusted",
+      "count": 3
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "layer": "unit",
+      "pkg": "extension",
+      "passed": 600,
+      "failed": 0,
+      "files": 52,
+      "baseline": 593
+    },
+    {
+      "type": "test_run",
+      "phase": 3,
+      "layer": "integration",
+      "pkg": "extension",
+      "passed": 117,
+      "failed": 0,
+      "files": 13,
+      "baseline": 115
+    },
+    {
+      "type": "security_audit",
+      "at": "2026-09-29T19:40:00+08:00",
+      "status": "PASS",
+      "iteration": 4,
+      "blocking_open": 0,
+      "detail": "new write primitive (.omnipilot/config.json) is server-derived and rides the capture commit; never overwrites a recorded tier, never guesses for content without a record"
     }
   ]
 }

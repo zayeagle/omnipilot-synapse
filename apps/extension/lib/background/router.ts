@@ -66,26 +66,45 @@ export function errorCodeOf(error: unknown): ErrorCode {
   return 'unknown';
 }
 
-const ERROR_CODES: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
-  'auth',
-  'scope',
-  'notFound',
-  'conflict',
-  'rateLimited',
-  'timeout',
-  'network',
-  'locked',
-  'needVault',
-  'wrongPassphrase',
-  'passphraseTooShort',
-  'badJson',
-  'emptyResponse',
-  'publicRepo',
-  'notConfigured',
-  'parse',
-  'validation',
-  'unknown',
-]);
+/**
+ * Every declared code, as a table rather than a hand-kept list.
+ *
+ * A code that is in `ErrorCode` but missing from this set is silently rewritten to `unknown` — which
+ * throws away exactly the guidance the status surface was built to show. Deriving the runtime set from
+ * a `Record<ErrorCode, true>` makes the compiler refuse an incomplete table, so the two can never drift
+ * (found by audit: `nativeUnavailable`, `protocolMismatch`, `gitFailed`, `syncConflict`,
+ * `indexUnavailable` were all missing).
+ */
+const ERROR_CODE_TABLE: Record<ErrorCode, true> = {
+  auth: true,
+  scope: true,
+  notFound: true,
+  conflict: true,
+  rateLimited: true,
+  timeout: true,
+  network: true,
+  locked: true,
+  needVault: true,
+  wrongPassphrase: true,
+  passphraseTooShort: true,
+  badJson: true,
+  emptyResponse: true,
+  publicRepo: true,
+  notConfigured: true,
+  parse: true,
+  validation: true,
+  nativeUnavailable: true,
+  protocolMismatch: true,
+  gitFailed: true,
+  syncConflict: true,
+  indexUnavailable: true,
+  tierLocked: true,
+  unknown: true,
+};
+
+const ERROR_CODES: ReadonlySet<ErrorCode> = new Set(
+  Object.keys(ERROR_CODE_TABLE) as ErrorCode[],
+);
 
 export class MessageRouter {
   private readonly handlers: HandlerMap;

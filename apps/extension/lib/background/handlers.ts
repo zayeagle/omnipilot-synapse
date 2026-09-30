@@ -26,11 +26,12 @@ import {
   PublicRepoError,
   StoreError,
 } from '../store/errors';
-import { createGitHubStore, type GitHubStore } from '../store/github-store';
+
 import { createGithubApi, type FetchLike } from '../store/github-api';
 import { vaultKdfFromEnvelope } from '../store/vault-codec';
 import { createGitTransportStore } from '../store/git-transport';
-import { selectCodec } from '../store/tier';
+import { createRepoStore, type RepoStore } from '../store/repo-store';
+import { loadStoreConfig, selectCodec, storeConfigFileIfMissing, switchTier } from '../store/tier';
 import type { ContentCodec } from '../store/codec';
 import type { CkfRecord } from '../core/ckf';
 import { reviewStatePath } from '../core/paths';
@@ -42,7 +43,6 @@ import type { NativeClient } from '../native/client';
 import { SyncCache, createBestBackend } from '../sync/cache';
 import {
   remoteFromStore,
-  remoteFromTransport,
   runSync,
   type SyncRemote,
   type SyncReport,
@@ -71,6 +71,7 @@ import {
   validateSyncPolicy,
   validateSyncRequest,
   LIMITS,
+  type SecurityMode,
 } from '../messages';
 import type { SettingsStore } from '../settings-store';
 import type { StatusData, VaultStatusData } from '../status';
@@ -96,6 +97,11 @@ export interface BackgroundContext {
   syncCache?: SyncCache;
   /** Injected in tests; the entrypoint owns the `browser.alarms` binding. */
   triggers?: SyncTriggers;
+  /**
+   * The running extension version, recorded as `client_version` in `.omnipilot/config.json`.
+   * Optional so a bare test harness can leave it unknown rather than invent one.
+   */
+  clientVersion?: string;
 }
 
 function notConfigured(): never {
@@ -108,32 +114,78 @@ function notConfigured(): never {
  * Fails closed: without an unlocked vault there are no secrets and therefore no store — the caller
  * gets `VaultLockedError` (code `locked`) and the UI offers to unlock, rather than any plaintext path.
  */
-export async function resolveStore(context: BackgroundContext): Promise<GitHubStore> {
-  const settings = await context.settings.load();
-  if (!settings.github.owner || !settings.github.repo || !settings.github.branch) notConfigured();
+interface ResolvedRepo {
+  store: RepoStore;
+  prefix: string | null;
+}
 
-  const secrets = await context.settings.getSecrets();
-  if (!secrets.githubPat) notConfigured();
+/**
+ * The repository, resolved through the **selected authorization mode**.
+ *
+ * This is the single place that decides which transport serves a request: token mode gets the REST
+ * store, SSH mode gets the companion's git wrapped in the same face. Everything above it — capture,
+ * distill, cards, review, conflicts, search — is written against that one face, which is what makes
+ * "SSH is a supported mode" true rather than a claim about the picker alone (R7).
+ *
+ * The content tier is resolved here too, and the **repository's own record wins**: a store that says
+ * `vault` is read and written as vault even when this installation's settings say otherwise, so no
+ * client can downgrade another client's repository to plaintext (R8).
+ */
+async function resolveRepo(context: BackgroundContext): Promise<ResolvedRepo> {
+  const authContext = await buildAuthContext(context);
+  const settings = authContext.snapshot;
+  const prefix = settings.github.pathPrefix || null;
+  const resolution = await resolveAuth(authContext);
+  if (!resolution.ok) raiseUnavailable(resolution.reason, resolution.message);
+  const auth = resolution.auth;
 
   const envelope = await context.settings.getEnvelope();
   const kdf = envelope ? vaultKdfFromEnvelope(envelope) : null;
-  if (settings.securityMode === 'vault' && !kdf) notConfigured();
+  const tierContext = {
+    prefix,
+    ...(context.clientVersion ? { clientVersion: context.clientVersion } : {}),
+    ...(context.now ? { now: context.now } : {}),
+  };
 
-  return createGitHubStore({
-    owner: settings.github.owner,
-    repo: settings.github.repo,
-    branch: settings.github.branch,
-    apiBase: settings.github.apiBase,
-    token: secrets.githubPat,
-    securityMode: settings.securityMode,
-    prefix: settings.github.pathPrefix,
-    publicRepoAcknowledged: settings.github.publicRepoAcknowledged,
-    session: context.session,
-    kdf,
-    fetchImpl: context.fetchImpl,
-    ...(context.crypto ? { crypto: context.crypto } : {}),
+  if (auth.mode === 'token') {
+    // The store needs a tier to exist, and the tier needs the store to be read: start from the
+    // settings, then rebuild once if the repository records something else. The rebuild happens only
+    // in the case this whole path exists to fix.
+    const first = await auth.createStore();
+    const recorded = await loadStoreConfig({ store: first, ...tierContext }, settings.securityMode);
+    if (recorded.security_mode === settings.securityMode) return { store: first, prefix };
+    return { store: await auth.createStore(recorded.security_mode), prefix };
+  }
+
+  const transport = await auth.createTransport();
+  const repoFullName = `${settings.github.owner}/${settings.github.repo}`;
+  const knowledge = createGitTransportStore({
+    native: transport.native,
+    repoRoot: transport.repoRoot,
+    branch: transport.branch,
+    repoFullName,
     ...(context.now ? { now: context.now } : {}),
   });
+  const recorded = await loadStoreConfig({ store: knowledge, ...tierContext }, settings.securityMode);
+  const codec = selectCodec(recorded.security_mode, context.session, context.crypto, {
+    ...(kdf ? { kdf } : {}),
+    prefix,
+    ...(context.now ? { now: context.now } : {}),
+  });
+  return {
+    store: createRepoStore(knowledge, { codec, prefix, repoFullName, branch: transport.branch }),
+    prefix,
+  };
+}
+
+/**
+ * The repository every caller above the sync engine talks to.
+ *
+ * Fails closed: without an unlocked vault there are no secrets and therefore no store — the caller
+ * gets `VaultLockedError` (code `locked`) and the UI offers to unlock, rather than any plaintext path.
+ */
+export async function resolveStore(context: BackgroundContext): Promise<RepoStore> {
+  return (await resolveRepo(context)).store;
 }
 
 /* ------------------------------------------------------------------ *
@@ -173,42 +225,47 @@ function raiseUnavailable(reason: string, message: string): never {
  * call the UI probes with is the one the sync runs with, so "the picker says SSH is ready" and "the
  * sync used SSH" cannot drift apart.
  */
+/**
+ * Record a tier change where it belongs — in the repository — or refuse it.
+ *
+ * A store that already holds content cannot be switched (there is no re-encode migration in this MVP),
+ * and saying so is what stops a tier change from silently orphaning every file the previous codec
+ * wrote. A store that is not reachable yet is left alone: the tier still travels in the settings, and
+ * the first content write records it (`storeConfigFileIfMissing`).
+ */
+async function recordTierChange(context: BackgroundContext, to: SecurityMode): Promise<void> {
+  let store: RepoStore;
+  try {
+    store = await resolveStore(context);
+  } catch {
+    // Not configured, or the vault is locked: nothing to record yet, and the choice is not lost.
+    return;
+  }
+  const settings = await context.settings.load();
+  await switchTier({
+    store,
+    prefix: settings.github.pathPrefix || null,
+    to,
+    ...(context.clientVersion ? { clientVersion: context.clientVersion } : {}),
+    ...(context.now ? { now: context.now } : {}),
+  });
+}
+
+/**
+ * The sync engine's view of the same repository.
+ *
+ * Deliberately built from `resolveRepo` rather than resolving auth a second time: the mode and the
+ * tier a sync uses must be the ones every other handler uses, or a sync could write ciphertext into a
+ * store the rest of the worker reads as plaintext.
+ */
 async function resolveSyncRemote(
   context: BackgroundContext,
 ): Promise<{ remote: SyncRemote; codec: ContentCodec; prefix: string | null }> {
-  const authContext = await buildAuthContext(context);
-  const prefix = authContext.snapshot.github.pathPrefix || null;
-  const resolution = await resolveAuth(authContext);
-  if (!resolution.ok) raiseUnavailable(resolution.reason, resolution.message);
-  const auth = resolution.auth;
-
-  if (auth.mode === 'token') {
-    const store = await auth.createStore();
-    return { remote: remoteFromStore(store), codec: store.contentCodec, prefix };
-  }
-
-  const transport = await auth.createTransport();
-  const envelope = await context.settings.getEnvelope();
-  const kdf = envelope ? vaultKdfFromEnvelope(envelope) : null;
-  const codec = selectCodec(authContext.snapshot.securityMode, context.session, context.crypto, {
-    ...(kdf ? { kdf } : {}),
-    prefix,
-    ...(context.now ? { now: context.now } : {}),
-  });
-  return {
-    remote: remoteFromTransport(
-      createGitTransportStore({
-        native: transport.native,
-        repoRoot: transport.repoRoot,
-        branch: transport.branch,
-        repoFullName: `${authContext.snapshot.github.owner}/${authContext.snapshot.github.repo}`,
-        ...(context.now ? { now: context.now } : {}),
-      }),
-      prefix,
-    ),
-    codec,
-    prefix,
-  };
+  const { store, prefix } = await resolveRepo(context);
+  const base = remoteFromStore(store);
+  // `refresh` (git fetch) only exists on the companion transport; the REST path reads the remote.
+  const remote: SyncRemote = store.refresh ? { ...base, refresh: () => store.refresh!() } : base;
+  return { remote, codec: store.contentCodec, prefix };
 }
 
 /**
@@ -264,7 +321,7 @@ export async function performSync(
  * The shard operations a card decision needs, read against the repository so the postings travel with the card
  * in the same commit (the same rule captures follow since T5.7).
  */
-function cardShards(store: GitHubStore, prefix: string | null): CardDecisionShards {
+function cardShards(store: RepoStore, prefix: string | null): CardDecisionShards {
   const shards = createRemoteShardStore(store, prefix);
   const index = new SearchIndex({ store: shards, prefix });
   return {
@@ -300,7 +357,7 @@ function buildSearchIndex(
  * when the sync mode is SSH, so the shards it produces must be produced the same way.
  */
 export function shardProvider(
-  store: GitHubStore,
+  store: RepoStore,
   prefix: string | null,
 ): (record: CkfRecord) => Promise<RepoFile[]> {
   const shards = createRemoteShardStore(store, prefix);
@@ -326,7 +383,7 @@ function dedupeFiles(
   return [...byPath.values()].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
 }
 
-async function safeProbe(store: GitHubStore): Promise<StoreProbe | null> {
+async function safeProbe(store: RepoStore): Promise<StoreProbe | null> {
   try {
     return await store.probe();
   } catch (error) {
@@ -357,10 +414,13 @@ function vaultStatusData(vault: {
 async function probeCandidate(
   context: BackgroundContext,
   candidate: { owner: string; repo: string; branch: string; apiBase?: string; pat?: string },
-): Promise<StoreProbe> {
+): Promise<StoreProbe | null> {
   const existing = await context.settings.peekSecrets();
   const token = candidate.pat && candidate.pat.length > 0 ? candidate.pat : (existing?.githubPat ?? '');
-  if (!token) throw new NotConfiguredError('storage: a token is required to test the connection');
+  // SSH mode stores no token, so there is nothing to probe with — and failing the save for that made
+  // an SSH-only configuration impossible to record (the mode is chosen in the same save, so the stored
+  // mode is still `token` when this runs). The page's own 测试连接 is what verifies it (R7).
+  if (!token) return null;
 
   const api = createGithubApi({
     fetchImpl: context.fetchImpl,
@@ -476,6 +536,19 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
         store,
         queue: context.queue,
         shards: shardProvider(store, settings.github.pathPrefix || null),
+        // The first write of a capture also records which tier this repository holds, so it describes
+        // itself from its first commit onward instead of leaving every client to assume (T7.1).
+        bootstrap: async () => {
+          const file = await storeConfigFileIfMissing({
+            store,
+            prefix: settings.github.pathPrefix || null,
+            chosenMode: settings.securityMode,
+            branch: settings.github.branch,
+            ...(context.clientVersion ? { clientVersion: context.clientVersion } : {}),
+            ...(context.now ? { now: context.now } : {}),
+          });
+          return file ? [file] : [];
+        },
         ...(context.now ? { now: context.now } : {}),
       });
       const outcome = await service.capture(payload);
@@ -565,9 +638,11 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
 
     'settings.github': async (request) => {
       const payload = validateGithubSettings(request.payload);
+      // Best-effort by design: a configuration must be recordable before it is verified. `null` means
+      // "nothing to probe with", which is the normal state of an SSH-only setup (R7).
       const probe = await probeCandidate(context, payload);
 
-      if (probe.visibility === 'public' && payload.publicRepoAcknowledged !== true) {
+      if (probe && probe.visibility === 'public' && payload.publicRepoAcknowledged !== true) {
         throw new PublicRepoError(
           'storage: this repository is public — acknowledge the risk before saving',
         );
@@ -593,6 +668,14 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
 
     'settings.security': async (request) => {
       const payload = validateSecuritySettings(request.payload);
+      // A tier change is a REPOSITORY operation, not a local preference (R8): it must be recorded where
+      // the repository lives, and refused when the store already holds content the previous codec wrote.
+      if (payload.securityMode !== undefined) {
+        const current = await context.settings.load();
+        if (payload.securityMode !== current.securityMode) {
+          await recordTierChange(context, payload.securityMode);
+        }
+      }
       const patched = await context.settings.patch(payload);
       return ok({
         enabled: patched.enabled,

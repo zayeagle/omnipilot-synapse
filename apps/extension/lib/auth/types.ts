@@ -62,7 +62,11 @@ export interface GitAuth {
  */
 export interface TokenBackedAuth extends GitAuth {
   readonly mode: 'token';
-  createStore(): Promise<GitHubStore>;
+  /**
+   * The REST store. `mode` overrides the content tier for this call: the repository's own record wins
+   * over the local setting, and the store cannot exist without knowing which codec it speaks (R8).
+   */
+  createStore(mode?: SecurityMode): Promise<GitHubStore>;
 }
 
 export interface SshBackedAuth extends GitAuth {

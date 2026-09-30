@@ -11,7 +11,7 @@
 | 0 | Assessment | ✅ done |
 | 1 | Blueprint | ✅ done |
 | 2 | Planning | ✅ done |
-| 3 | Development | 🔄 current — 已落地：判据/门禁文档 · 全量审计 · 提案闭环 · 冲突决策面 · 失败可读 · 复习回路；待接线见 02-plan.md |
+| 3 | Development | ✅ done — 判据/门禁文档 · 全量审计 · 提案闭环 · 冲突决策面 · 失败可读 · 复习回路 · SSH 克隆引导 · 首启内容档位显式选择 · E2E 12→19 · B.22 iteration 4 PASS |
 | 4 | Testing | ⏳ pending |
 | 5 | Deploy | ⏳ pending |
 

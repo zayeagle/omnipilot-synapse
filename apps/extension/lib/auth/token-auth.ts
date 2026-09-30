@@ -21,6 +21,8 @@ import {
 export class TokenAuth implements TokenBackedAuth {
   readonly mode = 'token' as const;
   private store: GitHubStore | null = null;
+  /** Which tier the memoised store was built for; a different mode must rebuild, not reuse. */
+  private storeMode: SecurityMode | null = null;
 
   constructor(private readonly context: AuthContext) {}
 
@@ -56,8 +58,8 @@ export class TokenAuth implements TokenBackedAuth {
     }
   }
 
-  async createStore(): Promise<GitHubStore> {
-    if (this.store) return this.store;
+  async createStore(mode: SecurityMode = this.context.snapshot.securityMode): Promise<GitHubStore> {
+    if (this.store && this.storeMode === mode) return this.store;
     const settings = this.context.snapshot;
     if (!settings.github.owner || !settings.github.repo || !settings.github.branch) {
       throw new NotConfiguredError('auth: owner, repository and branch are required');
@@ -69,7 +71,7 @@ export class TokenAuth implements TokenBackedAuth {
 
     const envelope = await this.context.settings.getEnvelope();
     const kdf = envelope ? vaultKdfFromEnvelope(envelope) : null;
-    if (settings.securityMode === 'vault' && !kdf) {
+    if (mode === 'vault' && !kdf) {
       // Fail closed rather than silently writing plaintext into an encrypted store.
       throw new VaultLockedError('auth: vault mode needs the store KDF parameters');
     }
@@ -80,7 +82,7 @@ export class TokenAuth implements TokenBackedAuth {
       branch: settings.github.branch,
       apiBase: settings.github.apiBase,
       token: secrets.githubPat,
-      securityMode: settings.securityMode,
+      securityMode: mode,
       prefix: settings.github.pathPrefix,
       publicRepoAcknowledged: settings.github.publicRepoAcknowledged,
       session: this.context.session,
@@ -99,5 +101,6 @@ export class TokenAuth implements TokenBackedAuth {
   /** Invalidate the memoised store after a settings change. */
   reset(): void {
     this.store = null;
+    this.storeMode = null;
   }
 }

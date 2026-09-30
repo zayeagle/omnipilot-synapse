@@ -102,6 +102,19 @@ export async function launchExtension(options: { headed?: boolean } = {}): Promi
   };
 }
 
+/**
+ * Open the popup page itself.
+ *
+ * The popup is a real extension page at the extension origin, and the pending/review sections the
+ * decision surface renders from are built exactly there — `options.html` does not carry them. Opening
+ * it directly is the only way to assert on what a user sees when they click the toolbar icon.
+ */
+export async function openPopup(extension: LaunchedExtension): Promise<Page> {
+  const page = await extension.context.newPage();
+  await page.goto(`chrome-extension://${extension.extensionId}/popup.html`);
+  return page;
+}
+
 export interface SeedOptions {
   /** `vault` (default) or `transparent`. */
   securityMode?: 'vault' | 'transparent';
@@ -116,6 +129,11 @@ export interface SeedOptions {
    * exactly as the options form does when the user fills it in.
    */
   withSshClone?: boolean;
+  /**
+   * Leave the content-tier question unanswered, so a spec can observe the first-run gate (T7).
+   * Every other spec seeds it as answered, because answering it is not what they are about.
+   */
+  tierUnchosen?: boolean;
 }
 
 /**
@@ -134,6 +152,7 @@ export async function seedSettings(options: Page, seed: SeedOptions = {}): Promi
       withAi: boolean;
       modelKey: string;
       acknowledged: boolean;
+      tierChosen: boolean;
     }) => {
       const send = (type: string, payload?: unknown): Promise<unknown> =>
         // Available on every extension page in MV3.
@@ -154,6 +173,7 @@ export async function seedSettings(options: Page, seed: SeedOptions = {}): Promi
       const security = (await send('settings.security', {
         securityMode: config.mode,
         aiAuthorized: config.withAi,
+        contentTierChosen: config.tierChosen,
       })) as { ok: boolean };
       if (!security.ok) return { step: 'settings.security', response: security };
 
@@ -174,6 +194,7 @@ export async function seedSettings(options: Page, seed: SeedOptions = {}): Promi
       withAi: seed.withAi ?? false,
       modelKey: TEST_MODEL_KEY,
       acknowledged: seed.publicRepoAcknowledged ?? false,
+      tierChosen: seed.tierUnchosen !== true,
     },
   );
 
@@ -545,4 +566,153 @@ function replaceBody(document: string, body: string): string {
 /** The body (the human-visible part) of a frontmatter document, normalised to one line. */
 export function testBodyOf(document: string): string {
   return document.split('---').slice(2).join('---').replace(/\s+/gu, ' ').trim();
+}
+
+/* ------------------------------------------------------------------ *
+ * i18n-backed label helpers
+ * ------------------------------------------------------------------ */
+
+export type SpecLang = 'en' | 'zh_CN';
+
+/**
+ * The two flat dictionaries from `lib/i18n.ts`, as plain maps.
+ *
+ * Specs must assert on the *shipped* text, never on English invented in the spec. The dictionaries are
+ * a data-only module (flat `'key': 'value'` literals, no interpolation), so they can be read and
+ * evaluated here instead of importing production code into the harness. A spec that simply assumed a
+ * language would pass on one machine and fail on another, which is why the key is always looked up in
+ * both and the page's own language picks the one the assertion uses.
+ */
+let dictionaries: Record<SpecLang, Record<string, string>> | null = null;
+
+/**
+ * A minimal property scan over one flat `{ 'key': 'value', … }` literal.
+ *
+ * The dictionaries are plain string maps, so a tiny scanner is enough — and it is deliberately not a
+ * general JS parser: keys and values must be quoted string literals, which the i18n module's parity
+ * test already guarantees. It exists so a spec can assert on the SHIPPED text in the page's own
+ * language without importing production code into the harness.
+ */
+function parseFlatDictionary(literal: string): Record<string, string> {
+  const table: Record<string, string> = {};
+  let index = 0;
+  const skipTrivia = (): void => {
+    for (;;) {
+      while (index < literal.length && /\s/u.test(literal[index] ?? '')) index += 1;
+      if (literal[index] === '/' && literal[index + 1] === '/') {
+        while (index < literal.length && literal[index] !== '\n') index += 1;
+        continue;
+      }
+      if (literal[index] === '/' && literal[index + 1] === '*') {
+        index += 2;
+        while (index < literal.length && !(literal[index] === '*' && literal[index + 1] === '/')) index += 1;
+        index += 2;
+        continue;
+      }
+      return;
+    }
+  };
+  const readString = (): string => {
+    const quote = literal[index];
+    index += 1;
+    let out = '';
+    while (index < literal.length && literal[index] !== quote) {
+      const character = literal[index];
+      if (character === '\\') {
+        const next = literal[index + 1] ?? '';
+        out += next === 'n' ? '\n' : next === 't' ? '\t' : next;
+        index += 2;
+        continue;
+      }
+      out += character;
+      index += 1;
+    }
+    index += 1;
+    return out;
+  };
+  skipTrivia();
+  if (literal[index] === '{') index += 1;
+  for (;;) {
+    skipTrivia();
+    if (index >= literal.length || literal[index] === '}') break;
+    const quote = literal[index];
+    if (quote !== '\'' && quote !== '"') throw new Error('helpers: dictionary keys must be quoted');
+    const key = readString();
+    skipTrivia();
+    if (literal[index] !== ':') throw new Error('helpers: expected : after ' + key);
+    index += 1;
+    skipTrivia();
+    const valueQuote = literal[index];
+    if (valueQuote !== '\'' && valueQuote !== '"') {
+      throw new Error('helpers: expected a string value for ' + key);
+    }
+    table[key] = readString();
+    skipTrivia();
+    if (literal[index] === ',') index += 1;
+  }
+  return table;
+}
+
+export function dicts(): Record<SpecLang, Record<string, string>> {
+  if (dictionaries !== null) return dictionaries;
+  const source = readFileSync(join(HERE, '..', 'lib', 'i18n.ts'), 'utf8');
+  const next = {} as Record<SpecLang, Record<string, string>>;
+  for (const lang of ['en', 'zh_CN'] as const) {
+    const marker = 'export const ' + lang + ': Dict = {';
+    const start = source.indexOf(marker);
+    if (start < 0) throw new Error('helpers: could not find the ' + lang + ' dictionary');
+    const from = start + marker.length - 1;
+    let depth = 0;
+    let end = -1;
+    for (let cursor = from; cursor < source.length; cursor += 1) {
+      const character = source[cursor];
+      if (character === '{') depth += 1;
+      else if (character === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          end = cursor + 1;
+          break;
+        }
+      }
+    }
+    if (end < 0) throw new Error('helpers: the ' + lang + ' dictionary is not closed');
+    next[lang] = parseFlatDictionary(source.slice(from, end));
+  }
+  dictionaries = next;
+  return next;
+}
+
+/** Shipped text for a key in the locale the *page* resolved, which is the text a user actually sees. */
+export function dictText(lang: SpecLang, key: string): string {
+  const table = dicts()[lang];
+  const text = table[key];
+  if (typeof text !== 'string' || text.length === 0) {
+    throw new Error(`helpers: no ${lang} text for ${key}`);
+  }
+  return text;
+}
+
+/** The UI language of a page — the same `navigator.language` the entrypoints feed to `detectLang`. */
+export async function pageLang(page: Page): Promise<SpecLang> {
+  const locale = await page.evaluate(() => navigator.language);
+  const normalized = String(locale ?? '').toLowerCase().replace('-', '_');
+  if (normalized.startsWith('zh')) return 'zh_CN';
+  if (normalized.startsWith('en')) return 'en';
+  // `detectLang` falls back to Chinese for anything it does not recognise.
+  return 'zh_CN';
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}
+
+/** A key's text as a regex matching *either* shipped translation — the house style for text assertions. */
+export function eitherText(key: string): RegExp {
+  const { en: english, zh_CN: chinese } = dicts();
+  const escape = (value: string): string => value.replace(/[{][a-z_]+[}]/gu, '\u0000').split('\u0000').map(escapeRegExp).join('[\\s\\S]*');
+  const alternatives = [english[key], chinese[key]]
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .map((value) => `(?:${escape(value)})`);
+  if (alternatives.length === 0) throw new Error(`helpers: no text for ${key} in either dictionary`);
+  return new RegExp(alternatives.join('|'), 'u');
 }

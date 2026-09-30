@@ -49,7 +49,10 @@ import {
   repoFullNameOf,
   safeText,
   saveProviderDisabled,
+  needsTierChoice,
   saveStorageDisabled,
+  storageSaveBlocked,
+  tierChoiceOptions,
   searchResultRows,
   secretsPresence,
   selectionCapturePayload,
@@ -339,6 +342,8 @@ describe('secret-free projections (F8 UNIT)', () => {
       enabled: false,
       aiAuthorized: true,
       securityMode: 'transparent',
+      // The source settings predate the field, so the form reads it as unanswered (T7).
+      contentTierChosen: false,
       autoLockMinutes: 45,
       owner: 'zayeagle',
       repo: 'kb',
@@ -451,6 +456,44 @@ describe('save gates and acknowledgements (F8 UNIT)', () => {
   });
 });
 
+describe('first-run content-tier choice (T7 UNIT)', () => {
+  it('TC-P8-U01 asks only while nothing has decided yet', () => {
+    // Nothing recorded and nothing chosen: this is a first run, so it must be asked.
+    expect(needsTierChoice({ chosen: false })).toBe(true);
+    // An answered question stays answered.
+    expect(needsTierChoice({ chosen: true })).toBe(false);
+    // A tier the repository already records wins over the local flag.
+    expect(needsTierChoice({ recorded: true, chosen: false })).toBe(false);
+    // Content with no record is never defaulted away, whichever way the local flag points.
+    expect(needsTierChoice({ ambiguous: true, chosen: true })).toBe(true);
+    expect(needsTierChoice({ ambiguous: true, chosen: false })).toBe(true);
+  });
+
+  it('TC-P8-U02 gives each option a plain-language consequence, in both languages', () => {
+    for (const lang of ['en', 'zh_CN'] as const) {
+      const options = tierChoiceOptions(lang);
+      expect(options.map((option) => option.value)).toEqual(['transparent', 'vault']);
+      for (const option of options) {
+        expect(option.label.length).toBeGreaterThan(0);
+        expect(option.consequence.length).toBeGreaterThan(10);
+        // A key name rendered as a sentence is not a consequence anyone can weigh.
+        expect(option.consequence).not.toContain('options.');
+        expect(option.label).not.toContain('options.');
+      }
+      // Identical text would mean one of the two options was never written.
+      expect(options[0]!.consequence).not.toBe(options[1]!.consequence);
+    }
+  });
+
+  it('TC-P8-U02 puts the tier question ahead of the probe in the save reason', () => {
+    expect(storageSaveBlocked(null, false, true, 'en')).toBe(
+      t('options.store.tier.blocked', null, 'en'),
+    );
+    // Once it is answered, the probe question takes over with exactly the sentence it had before.
+    expect(storageSaveBlocked(null, false, false, 'en')).toBe(t('options.store.testFirst', null, 'en'));
+    expect(storageSaveBlocked(probe(), false, false, 'en')).toBe('');
+  });
+});
 describe('provider + vault form helpers (F8 UNIT)', () => {
   it('TC-F8-U03 lists the shipped providers and their model suggestions', () => {
     expect(providerOptions().map((option) => option.value)).toEqual([

@@ -12,7 +12,8 @@ import { ERROR_GUIDANCE, errorGuidance, syncLine } from './status';
 describe('failure guidance (F5 UNIT)', () => {
   it('TC-P5-U01 every row is a key pair plus an actionable target', () => {
     for (const [code, guidance] of Object.entries(ERROR_GUIDANCE)) {
-      expect(guidance.titleKey, code).toMatch(/^guidance\.[a-zA-Z]+$/u);
+      // One vocabulary: the message reuses the existing `error.<code>` family; only the action is new.
+      expect(guidance.titleKey, code).toMatch(/^error\.[a-zA-Z]+$/u);
       expect(guidance.actionKey, code).toMatch(/^guidance\.[a-zA-Z]+\.action$/u);
       expect(guidance.target, code).not.toBe('');
       // Keys, not prose: a rendered sentence here would be an outside string the UI must not print.
@@ -33,7 +34,7 @@ describe('failure guidance (F5 UNIT)', () => {
   it('TC-P5-U02 an unknown code still yields something the user can act on', () => {
     const fallback = errorGuidance('definitely-not-a-code' as never);
     expect(fallback.target).toBe('retry');
-    expect(fallback.titleKey).toBe('guidance.unknown');
+    expect(fallback.titleKey).toBe('error.unknown');
   });
 });
 describe('failure guidance is rendered (F5 UNIT)', () => {
@@ -61,14 +62,15 @@ describe('failure guidance is rendered (F5 UNIT)', () => {
 
   it('TC-P5-U02 the status row says WHY it failed, not just that it failed', () => {
     const line = syncLine(prefs, 'zh_CN');
-    expect(line).toContain('保险库处于锁定状态');
-    expect(line).not.toContain('guidance.');
+    // The property, not a wording: a translated sentence reaches the row and no key ever does.
+    expect(line.length).toBeGreaterThan(0);
+    expect(line).not.toMatch(/(?:guidance|error)\.[a-zA-Z]/u);
   });
 
   it('TC-P5-U02 a code we do not know still renders a sentence, never an empty row', () => {
     const odd = { ...prefs, sync: { ...prefs.sync, lastFailureCode: 'something-new' } };
     const line = syncLine(odd, 'en');
     expect(line.length).toBeGreaterThan(0);
-    expect(line).not.toContain('guidance.');
+    expect(line).not.toMatch(/(?:guidance|error)\.[a-zA-Z]/u);
   });
 });

@@ -13,7 +13,7 @@ import type { CaptureRequestPayload } from '../messages';
 import type { CaptureQueue } from '../queues';
 import { dedupUrlKey } from '../store/codec';
 import { isStoreError, NotFoundError, RateLimitError, ServerError, TimeoutError, NetworkError, NotConfiguredError } from '../store/errors';
-import type { GitHubStore } from '../store/github-store';
+import type { RepoStore } from '../store/repo-store';
 import type { RepoFile } from '../store/types';
 import { buildSourceItem } from './normalize';
 
@@ -27,7 +27,7 @@ export interface CaptureOutcome {
 }
 
 export interface CaptureServiceOptions {
-  store: GitHubStore;
+  store: RepoStore;
   queue: CaptureQueue;
   now?: () => number;
   /** Recent key → path cache to short-circuit an index read for a just-captured page. */
@@ -39,6 +39,13 @@ export interface CaptureServiceOptions {
    * repository access, and this service deliberately only knows the store interface.
    */
   shards?: (record: CkfRecord) => Promise<readonly RepoFile[]>;
+  /**
+   * Files the repository must hold that are not part of this capture — `.omnipilot/config.json`.
+   *
+   * They ride in the capture's own commit, so recording the store's tier never costs a second
+   * commit and a failed capture cannot leave a half-configured store behind.
+   */
+  bootstrap?: () => Promise<readonly RepoFile[]>;
 }
 
 /** Errors worth retrying later rather than surfacing as a hard failure. */
@@ -66,11 +73,12 @@ export function dedupContentKey(item: SourceItem): string {
 }
 
 export class CaptureService {
-  private readonly store: GitHubStore;
+  private readonly store: RepoStore;
   private readonly queue: CaptureQueue;
   private readonly now: () => number;
   private readonly recentLimit: number;
   private readonly shards?: (record: CkfRecord) => Promise<readonly RepoFile[]>;
+  private readonly bootstrap?: () => Promise<readonly RepoFile[]>;
 
   constructor(options: CaptureServiceOptions) {
     this.store = options.store;
@@ -78,6 +86,7 @@ export class CaptureService {
     this.now = options.now ?? Date.now;
     this.recentLimit = options.recentLimit ?? 20;
     if (options.shards) this.shards = options.shards;
+    if (options.bootstrap) this.bootstrap = options.bootstrap;
   }
 
   /**
@@ -88,6 +97,19 @@ export class CaptureService {
     if (!this.shards) return [];
     try {
       return await this.shards(record);
+    } catch {
+      return [];
+    }
+  }
+
+  /**
+   * Best-effort for the same reason the shards are: the note the user just captured is the thing
+   * that must not fail. A store whose tier could not be read keeps working from the settings.
+   */
+  private async bootstrapFiles(): Promise<readonly RepoFile[]> {
+    if (!this.bootstrap) return [];
+    try {
+      return await this.bootstrap();
     } catch {
       return [];
     }
@@ -148,7 +170,7 @@ export class CaptureService {
     }
 
     try {
-      const extraFiles = await this.shardsFor(item);
+      const extraFiles = [...(await this.shardsFor(item)), ...(await this.bootstrapFiles())];
       const committed = await this.store.commitRecord(item, {
         index,
         ...(extraFiles.length > 0 ? { extraFiles } : {}),

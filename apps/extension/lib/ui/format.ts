@@ -600,6 +600,8 @@ export interface SettingsForm {
   enabled: boolean;
   aiAuthorized: boolean;
   securityMode: SecurityMode;
+  /** Whether this installation has already recorded an explicit tier choice (T7). */
+  contentTierChosen: boolean;
   autoLockMinutes: number;
   owner: string;
   repo: string;
@@ -632,6 +634,7 @@ export function defaultSettingsForm(): SettingsForm {
     enabled: true,
     aiAuthorized: false,
     securityMode: 'vault',
+    contentTierChosen: false,
     autoLockMinutes: DEFAULT_AUTO_LOCK_MINUTES,
     owner: '',
     repo: '',
@@ -667,6 +670,7 @@ export function settingsToForm(source: unknown): SettingsForm {
     enabled: raw['enabled'] !== false,
     aiAuthorized: raw['aiAuthorized'] === true,
     securityMode: raw['securityMode'] === 'transparent' ? 'transparent' : 'vault',
+    contentTierChosen: raw['contentTierChosen'] === true,
     autoLockMinutes: clampAutoLockMinutes(raw['autoLockMinutes']),
     owner: safeText(github['owner'], 100),
     repo: safeText(github['repo'], 200),
@@ -808,6 +812,68 @@ export function storageSaveHint(
   return '';
 }
 
+/* --------------------------- first-run tier choice -------------------------- */
+
+/**
+ * Whether the 存储 page has to ask which tier the repository uses before it may save.
+ *
+ * The inputs are the facts `resolveTier` decides on, minus the ones this page cannot observe:
+ * `recorded` (the repository's `.omnipilot/config.json` already names a tier) and `ambiguous`
+ * (the repository holds content but records nothing). A page cannot open the store, so it passes
+ * neither and leans on `chosen`, its own record of an explicit decision. The worker enforces the
+ * stronger rules: `resolveTier` never guesses, and the tier write never overwrites a recorded mode.
+ */
+export function needsTierChoice(input: {
+  recorded?: boolean;
+  ambiguous?: boolean;
+  chosen: boolean;
+}): boolean {
+  // A tier the repository already records wins outright: this is not a first run for that store.
+  if (input.recorded === true) return false;
+  // Content with no record is the one case that must never be resolved by a default.
+  if (input.ambiguous === true) return true;
+  return input.chosen !== true;
+}
+
+export interface TierChoiceOption {
+  value: SecurityMode;
+  label: string;
+  /** What the choice means for the user's own files — the tradeoff, not the implementation. */
+  consequence: string;
+}
+
+/**
+ * The two tiers, each with the consequence a person actually needs: who can read the repository,
+ * and what is lost if the passphrase is. Readable first, because that is the product's stance.
+ */
+export function tierChoiceOptions(lang?: Lang): TierChoiceOption[] {
+  return [
+    {
+      value: 'transparent',
+      label: t('options.security.mode.transparent', null, lang),
+      consequence: t('options.store.tier.transparent.consequence', null, lang),
+    },
+    {
+      value: 'vault',
+      label: t('options.security.mode.vault', null, lang),
+      consequence: t('options.store.tier.vault.consequence', null, lang),
+    },
+  ];
+}
+
+/** Why the 存储 save is refused, in the order the user has to fix things ('' when it may be saved). */
+export function storageSaveBlocked(
+  probe: StoreProbe | null,
+  acknowledged: boolean,
+  tierRequired: boolean,
+  lang?: Lang,
+): string {
+  // The tier comes first: it decides what the repository even contains, so the probe's answer
+  // cannot be judged before it is settled.
+  if (tierRequired) return t('options.store.tier.blocked', null, lang);
+  return storageSaveHint(probe, acknowledged, lang);
+}
+
 /* ------------------------------ sync surface ------------------------------- */
 
 /**
@@ -834,6 +900,11 @@ export interface SyncStatusView {
   outcome: string;
   pending: number;
   conflicts: ConflictStatus[];
+  /**
+   * The **code** of the last failure (never the worker's sentence): the surface renders its own
+   * translated guidance and the one action that fixes it (F5).
+   */
+  failureCode: string | null;
   /** The index/cache could not be read and a rebuild is the next step. */
   needsRebuild: boolean;
 }
@@ -856,7 +927,7 @@ function safeCount(value: unknown): number {
 export function normalizeSyncStatus(value: unknown): SyncStatusView {
   const raw = asRecord(value);
   if (!raw) {
-    return { head: '', lastSyncAt: '', outcome: 'never', pending: 0, conflicts: [], needsRebuild: false };
+    return { head: '', lastSyncAt: '', outcome: 'never', pending: 0, conflicts: [], failureCode: null, needsRebuild: false };
   }
   const outcome = asRecord(raw['sync'])?.['lastOutcome'] ?? raw['lastOutcome'] ?? raw['outcome'];
   const conflictsRaw = raw['conflicts'];
@@ -885,6 +956,8 @@ export function normalizeSyncStatus(value: unknown): SyncStatusView {
     : [];
   const pendingRaw = raw['pending'];
   return {
+    // The code, not a sentence: the surface translates it itself (and `raw` is non-null on this path).
+    failureCode: (asRecord(raw['state'])?.['lastErrorCode'] as string | undefined) ?? null,
     head: safeText(raw['head'], 120),
     lastSyncAt: formatTimestamp(raw['lastSyncAt'] ?? raw['syncedAt']),
     outcome:

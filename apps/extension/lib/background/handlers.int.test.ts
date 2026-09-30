@@ -169,6 +169,92 @@ function makeWorker(options: { private?: boolean; reply?: string } = {}) {
 
   return { area, session, settings, queue, ledger, router, pageClip, ...fetchStub };
 }
+/**
+ * R7/R8 — the authorization mode and the content tier are contracts, not picker decoration.
+ *
+ * The tier half is the security-relevant one: the repository's own record must win over this
+ * installation's setting, or one client can write plaintext into another client's encrypted store.
+ */
+describe('authorization mode + content tier integrity (R7/R8 INT)', () => {
+  it('TC-R7-I01 an SSH-only configuration fails about the companion, never about a missing token', async () => {
+    const worker = makeWorker();
+    await send(worker, 'vault.setup', { passphrase: PASSPHRASE });
+    const saved = await send(worker, 'settings.github', {
+      owner: 'zayeagle',
+      repo: 'omnipilot-synapse',
+      branch: 'main',
+      ssh: { repoRoot: '/srv/kb' },
+    });
+    expect(saved.ok).toBe(true);
+    expect((await send(worker, 'settings.security', { authMode: 'ssh' })).ok).toBe(true);
+
+    // No PAT is stored and this harness has no companion. Before R7 every one of these failed with
+    // `notConfigured` ('add a token') while the status surface said the user was configured; now the
+    // resolution reaches the auth layer and reports the actionable fact.
+    const listed = await send(worker, 'cards.list', { limit: 5 });
+    expect(listed.ok).toBe(false);
+    if (listed.ok) throw new Error('unreachable');
+    expect(listed.code).toBe('nativeUnavailable');
+  });
+
+  it('TC-R8-I02 a tier change is refused while the repository holds content, and recorded while it is empty', async () => {
+    const worker = await configuredWorker();
+    const captured = await send(worker, 'capture.request', {
+      mode: 'selection',
+      url: 'https://example.com/article',
+      title: 'A source',
+      selection: LONG_BODY,
+    });
+    expect(captured.ok).toBe(true);
+
+    const refused = await send(worker, 'settings.security', { securityMode: 'vault' });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error('unreachable');
+    expect(refused.code).toBe('tierLocked');
+    // The settings must not have moved either: a refused change is refused everywhere.
+    const prefs = await send(worker, 'prefs.get');
+    expect(prefs.ok).toBe(true);
+    if (!prefs.ok) throw new Error('unreachable');
+    expect((prefs.data as { securityMode?: string }).securityMode).toBe('transparent');
+
+    // An empty repository can still be told what tier it is: that is the first-run choice.
+    const empty = await configuredWorker();
+    expect((await send(empty, 'settings.security', { securityMode: 'vault' })).ok).toBe(true);
+    expect(empty.files.get('.omnipilot/config.json') ?? '').toContain('"security_mode": "vault"');
+  });
+
+  it('TC-R8-I01 the repository record wins over the local setting when the two disagree', async () => {
+    const worker = await configuredWorker();
+    // This installation says transparent (the default); the repository says vault.
+    worker.files.set(
+      '.omnipilot/config.json',
+      JSON.stringify(
+        {
+          schema_version: 1,
+          security_mode: 'vault',
+          created_at: '2026-07-09T00:00:00.000Z',
+          updated_at: '2026-07-09T00:00:00.000Z',
+        },
+        null,
+        2,
+      ) + '\n',
+    );
+
+    const captured = await send(worker, 'capture.request', {
+      mode: 'selection',
+      url: 'https://example.com/secret',
+      title: 'A private source',
+      selection: LONG_BODY,
+    });
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) throw new Error('unreachable');
+    const path = (captured.data as { path: string }).path;
+    // Vault mode names the file opaquely and encrypts the body — a plaintext write here would be a
+    // silent downgrade of a repository another client reads as encrypted (SC-R8-01).
+    expect(path.endsWith('.enc')).toBe(true);
+    expect(worker.files.get(path) ?? '').not.toContain(LONG_BODY.slice(0, 40));
+  });
+});
 
 async function send(
   worker: ReturnType<typeof makeWorker>,

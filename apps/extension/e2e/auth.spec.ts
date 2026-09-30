@@ -79,7 +79,10 @@ test('TC-E2E-02 SSH is reported unavailable, and token mode still captures and c
     // classification bug there would make this spec fail for a reason that is not about SSH.
     expect(refused.error ?? '').toContain('companion');
     expect(['nativeUnavailable', 'unknown']).toContain(refused.code ?? '');
-    expect(github.commitCount()).toBe(0);
+    // One commit by now: the seeded tier choice records `.omnipilot/config.json` in the repository,
+    // because a tier belongs to the store rather than to this browser profile (R8). The refused SSH
+    // sync must add nothing on top of it.
+    expect(github.commitCount()).toBe(1);
 
     // And the token path — the one that must always work — is untouched.
     await setAuthMode(options, 'token');
@@ -89,7 +92,9 @@ test('TC-E2E-02 SSH is reported unavailable, and token mode still captures and c
       text: 'Reviewing material near the point of forgetting',
     });
     expect(path).toMatch(/^inbox\/\d{4}\/\d{2}\/[^/]+\.md(?:\.enc)?$/u);
-    expect(github.commitCount()).toBe(1);
+    // Two commits: the seeded tier choice's config, then the capture. The refused SSH sync above added
+    // nothing, which is what this assertion is about.
+    expect(github.commitCount()).toBe(2);
     expect([...github.files.keys()]).toContain(path);
   } finally {
     await extension.dispose();

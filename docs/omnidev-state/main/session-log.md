@@ -1,29 +1,23 @@
 ---
 branch: main
-last_phase: 3
+last_phase: 2
 last_task_group: null
 timestamp: 2026-09-29T18:30:00+08:00
-complexity: L
-complexity_effective: L
-status: in_progress
+complexity: M
+complexity_effective: M
+status: completed
 spec_mode_active: true
-requirement_id: req-2026-09-29-synapse-workflow-elegance
+requirement_id: req-2026-09-30-synapse-auth-tier-integrity
 previous_requirement: req-2026-07-09-synapse-git-sync
-state_files: ["00-project-context.md", "01-blueprint.md", "08-spec.md", "04-design.md", "05-test-plan.md", "02-plan.md"]
-active_feature: null
-active_group: null
+state_files: ["00-project-context.md", "08-spec.md", "04-design.md", "05-test-plan.md", "02-plan.md"]
+active_feature: F10
+active_group: 0
 context_hot: ["00-project-context.md", "docs/requirements/00-requirements.md §5B (form A: Git)"]
 mid_task: null
 mid_task_files: []
 resume_payload: null
 resume_payload_at: null
-pending_decision:
-  decision_point: phase0_complexity
-  autopilot_resume: false
-  options:
-    - { id: confirm, command: "/od n" }
-    - { id: autopilot, command: "/od auto" }
-    - { id: adjust, command: "/od ad" }
+pending_decision: null
     - { id: cancel, command: "/od x" }
 autopilot: true
 ---
@@ -456,4 +450,74 @@ G2/G3 两个 P0 + G9（连接/输出/应用）+ G10（E4/E5 记忆），共 39 �
 cd apps/extension && npx tsc --noEmit && npx vitest run && npx vitest run --config vitest.int.config.ts && npm run build && npm run assert:content && npx playwright test
 cd apps/git-bridge && npx tsc --noEmit && npx vitest run && npm run test:sys
 ```
+
+
+## Resume (`/od 继续完成未完成的部分`, 2026-09-29)
+
+用户指示继续完成剩余 22 项任务。已核对磁盘状态：工作区 clean（全部改动已提交并推送，HEAD = `857982d`）、`flow-board` 指向 Phase 3、`02-plan.md` 有 22 项未勾选。**本次为 Phase 3 续做，不重跑 Phase 0。**
+
+### T4.3 的落点（本轮勘明，省下一次读取）
+
+popup 的同步行在 `entrypoints/popup/main.ts`：元素建于 **147–157 行**（`syncOutcomeText` 徽标 / `syncCountsText` 计数 / `syncNowButton`，合成于 `syncRow`），渲染在 **约 325 行**（`syncOutcomeText.textContent = t('options.sync.outcome.' + syncView.outcome)`）。失败的**码**来自 `prefs.sync.lastFailureCode`（`status.get` 已投影），因此接线点是该渲染函数：由码取 `errorGuidance()` → 把原因写进 `syncCountsText`，并按 `target` 决定按钮（retry→`sync.now`；storage/companion→`openOptionsPage()`；unlock→聚焦口令输入；none→不加按钮）。
+
+### 合并两张错误表的**低风险路径**（本轮同时勘明）
+
+现有断言（`lib/ui/format.test.ts:101/116/120/122/145/147/152–157`）依赖 `describeError` 的既有词表：message 走 `error.<code>`，hint 走 `popup.needSetup` / `popup.needUnlock` / `options.store.scopeHint` 且**部分码的 hint 为 null**（如 timeout）。因此**不要**把 `describeError` 改成从 `ERROR_GUIDANCE` 派生（会改变这些文案并波及 8 处断言）。正确方向相反：**让 `ERROR_GUIDANCE` 的 `titleKey` 复用既有的 `error.<code>` 家族、只保留新增的 `guidance.<code>.action`**，并加一条测试断言「每个码的 titleKey 都能解析且不等于键名」。这样删掉 23 个重复的 `guidance.<code>` 键即可，不必动 `describeError` 的语义。
+
+### 其余入口
+
+T5.2 SSH 区块（`auth-form.ts` 的 `cloneCommand`/`repoRootError` 已备）· T6.4 复习队列补测 · T7.x 首启层级选择 · T9.1–T9.6 连接/输出/应用（`insights.ts` 的 `recallHint`/`suggestTopic` 已备）· T10.x E4/E5 接线（`preferences.ts` 已备，只写 `storage.local`）· T2.7/T3.5 三个 E2E · T8.x 收口。
+
+
+### 用户标准更新（2026-09-29）
+
+用户要求「继续完成剩下的部分，确保是一个完整可用的产品」。据此把剩余 21 项分为：**A 必须做**（T5.2/T5.3 SSH 引导接线 · T7.1–T7.3 首启层级选择 · T2.7/T3.5 三个 E2E）· **B 应该做**（错误字典合并 · T6.4 补测）· **C 延后到下一需求**（T9.x 连接/输出/应用 · T10.x E4/E5）· **D 收口**（T8.x）。判定标准写在 `02-plan.md` 的「完整可用产品」一节：**用户从安装到日常使用会不会撞墙或被骗**。
+
+## Resume Instructions (current — 2026-09-29 第 42 轮，supersedes the block above)
+
+**Where we are**：`req-2026-09-29-synapse-workflow-elegance` 的 Phase 3 **收口完成** —— 上面这条判定里的 A / B / D 组全部落地并验证；C 组（T9.x / T10.x）按该判定**明确延后**到下一需求，未做也未假装完成。
+
+**本轮落地（逐项可复验）**：
+
+- **T5.2/T5.3**：存储页 SSH 区块的克隆引导（这条命令 + 一键复制 + 路径在我们这边判定）；顺手修掉两个既有「界面在说谎」的缺陷（`ssh.*` 字段从不回填输入框、授权方式选择器从不反映已存储模式）。
+- **T7.1/T7.2/T7.3**：首启内容档位成为**一次显式选择**（未选不可保存，两个选项各带一句人话后果）；仓库侧记录由 `storeConfigFileIfMissing` 随**捕获自身的那次提交**写入 —— 已记录、或有内容但无记录时都不写（永不覆盖、永不猜）。
+- **E2E 12 → 19**：提案决定（`cards.spec.ts`）· 参考旅程（`review-journey.spec.ts`）· 首启档位（`first-run.spec.ts`）· 冲突三选一（`sync.spec.ts` 两条）。
+- **T8.1/T8.2/T8.3**：全量回归 · B.22 `iteration 4 = PASS` · README / AGENTS 基线（→ 600 / 117 / 19）/ 审计 / 进度 / 计划同步。
+
+**E2E 抓到的四件事（前 600 个单测都没抓到）**：① 一次保存里连发两次 `settings.security` 被限流（本轮引入，已合并为一次往返）；② `saveAuthSection` 是**死代码**，而档位持久化错落在其中 —— 界面上的「选择」根本不会落盘；③ 同步页签**不重读**状态，后台刚记下冲突时界面仍显示「冲突 0」；④ 冲突行不显示持有自己那一版的**兄弟路径**（三选一面对的是约定而不是路径）。
+
+**验证（本轮实测）**：extension tsc 0 · UNIT **600 / 52** · INT **117 / 13** · E2E **19 / 19** · build 0 · `assert:content` OK；companion tsc 0 · UNIT **48 / 6** · SYS **8**。**零 git 提交（B.16）**。
+
+**下一步**：Phase 4 的 `05-test-report.md` 仍是上一个需求的报告（本需求没把它列为交付物）；若要正式走 Phase 4，需先归档再重写。Phase 5 部署（`make deploy`）是维护者动作。C 组（连接 / 输出 / 应用、E4/E5 记忆）是下一需求的入口。
+
+## Resume Instructions (current — 2026-09-30，supersedes the block above)
+
+**Where we are**：`req-2026-09-30-synapse-auth-tier-integrity`（深度审计 → 修 P0/P1）的 Phase 3 **完成并全绿**；Phase 4/5 未跑（本轮交付物是修复 + 证据，不是新的测试报告）。
+
+**本轮落地**：
+- **G0（P0）**：`resolveStore` 改走 `resolveAuth`，token 与 SSH 共用一个 `RepoStore` 门面（`lib/store/repo-store.ts`）；`GitHubStore` 内部委托同一门面；`resolveSyncRemote` 复用同一次解析。顺手修掉"存储页保存 SSH-only 配置必然失败"。
+- **G1（P1）**：`resolveRepo` 先 `loadStoreConfig`，**仓库记录的档位优先**；档位变更走 `switchTier` 守卫（有内容 → `tierLocked` + 动作；空仓库 → 写 `config.json`）。
+- **附带**：`ERROR_CODES` 改为由 `Record<ErrorCode, true>` 推导（此前漏 5 个声明码）；`tierLocked` 新码 + 双语指引。
+
+**验证（全绿）**：extension tsc 0 · UNIT **600** · INT **120** · E2E **19/19** · build 0 · `assert:content` OK；companion tsc 0 · UNIT **48** · SYS **8**。零 git 提交（B.16）。
+
+**下一步**：① Phase 4 若要正式走，需先归档上一需求的 `05-test-report.md` 再重写；② 未修项 → `02-plan.md` Open backlog（`listPendingCards` 死代码 · 真正换档位的迁移 · 可选主机权限）；③ 上一需求的 C 组（T9.x/T10.x）仍是下一需求的入口。
+
+## Phase 0 Assessment — 深度审计请求（2026-09-30）
+
+**Requirement Analysis**：对整个实现做一次独立、证据化的深度检查（问题 + 安全风险），不是新功能。
+**Complexity Assessment**: **M** —— 取证已完成；修复集中在 1–2 处接线，但涉及授权模式与档位契约，属高风险改动。
+**Recommended Strategy**: Phase 0 → 2（Plan：发现 → 修复清单）→ 3（修复 + 门禁）→ 4（Test）。跳过 Blueprint（无方案选择）。
+**Confirmation Level**: full（涉及 P0 功能断裂与安全姿态）。
+
+**取证结论（文件:行）**：
+
+1. **P0 · SSH 授权模式只通了一半（界面在说谎）**：`resolveStore()`（`lib/background/handlers.ts:111-137`）硬要求 `secrets.githubPat` 并构造 **token** 版 store；只有 `resolveSyncRemote()`（`handlers.ts:176-212`）按 `authMode` 走 SSH。使用 `resolveStore` 的处理器：`status.get:454` · `inbox.list:463` · `capture.request:478` · `store.probe:554` · `conflict.resolve:713` · `review.due:792` · `cards.list:816` · `card.decide:850` · `runDistill:920`（即 `distill.request`）。而 `isConfigured()`（`lib/public-prefs.ts:150-153`）在 SSH + companion ok 时返回 true → 界面说「已配置」，随后捕获/提炼/Inbox/提案/复习/冲突决策/测试连接全部 `notConfigured`。
+2. **P1 · 仓库记录的档位在运行时从不被读取**：`resolveTier` / `loadStoreConfig` / `saveStoreConfig` / `switchTier`（`lib/store/tier.ts`）**只有测试调用**；运行时代码选 codec 的唯一依据是 `settings.securityMode`（`handlers.ts:128`、`:193`、`lib/store/github-store.ts:316`）。`storeConfigFileIfMissing` 读 config 只为决定「要不要写」。后果：README/`04-design` 的「仓库记录的档位优先」不成立；同一仓库被两个 `securityMode` 不同的客户端打开时，transparent 端会把**明文写进 vault 仓库**（不降级原则被绕过），vault 端会把密文写进 transparent 仓库；`switchTier` 的「有内容即拒绝切换」保护因此永不生效。
+3. **P2 · 死代码**：`GithubStore.listPendingCards`（`lib/store/github-store.ts:253`）仅测试调用，生产用索引直接过滤。
+4. **P3 · 权限面**：`optional_host_permissions: ['https://*/*']` + `unlimitedStorage` + `scripting`（`wxt.config.ts:21-38`）——有 trust-ack 与运行时按需授权兜着，但应在审计文档里显式记录为已接受风险。
+5. **P4 · 限流与正常操作冲突**：vault 预算 12/分钟/标签页，options 一次加载约花 5；同一窗口内第二次保存可能被拒（E2E 已复现）。安全姿态正确，但用户会看到 `rateLimited` 这种缺动作指引的失败，值得检查 `errorGuidance` 对它的 target。
+
+**已确认干净（本轮复核）**：无 `eval`/`innerHTML`/shell；`SECRET_BEARING_TYPES` 覆盖全部触仓库/companion 的类型，内容脚本只能发 `prefs.get`/`capture.request`（`lib/messages.ts:482-511`）；`assert:content` OK；companion 的 `.git/**` 拒绝仍在；工作区无密钥。
+
 

@@ -23,6 +23,7 @@ import {
   type DistillResultData,
   type ExtensionRequest,
   type ExtensionResponse,
+  type ErrorCode,
 } from '../../lib/messages';
 import type { StatusLine } from '../../lib/status';
 import {
@@ -47,6 +48,7 @@ import {
   type InboxRow,
   type SearchResultRow,
 } from '../../lib/ui/format';
+import { errorGuidance } from '../../lib/status';
 import {
   cardPatchFor,
   decisionResult,
@@ -147,11 +149,15 @@ function main(): void {
   const syncOutcomeText = el('span', 'badge', t('options.sync.outcome.never', null, LANG));
   const syncCountsText = el('span', 'inbox-meta', '');
   const syncNowButton = button(t('popup.syncNow', null, LANG));
+  // Only shown when the last failure has an action; a button that does nothing is worse than no button.
+  const syncFixButton = button('', 'link');
+  syncFixButton.hidden = true;
   const syncRow = el('div', 'row');
   syncRow.append(
     el('span', 'field-text', t('popup.sync', null, LANG)),
     syncOutcomeText,
     syncCountsText,
+    syncFixButton,
     el('span', 'spacer'),
     syncNowButton,
   );
@@ -331,9 +337,29 @@ function main(): void {
       counts.push(t('status.conflicts', { count: syncView.conflicts.length }, LANG));
     }
     syncCountsText.textContent = counts.join(' · ');
+    // The cause in the user's own language, plus the single action that fixes it (T4.3). The worker's own
+    // error sentence is never rendered — the table turns a closed code into a fixed sentence.
+    const guidance = syncView.failureCode ? errorGuidance(syncView.failureCode as ErrorCode) : null;
+    syncFixButton.hidden = guidance === null || guidance.target === 'none';
+    if (guidance !== null) {
+      syncFixButton.textContent = t(guidance.actionKey, null, LANG);
+      syncFixButton.dataset['target'] = guidance.target;
+    }
   }
 
   /** Fold a `sync.status` reply into the row; a failed read degrades to "never synced". */
+  syncFixButton.addEventListener('click', () => {
+    const target = syncFixButton.dataset['target'];
+    // `unlock` lives in the options page (the popup has no passphrase field), so it opens the same place
+    // `storage` and `companion` do rather than pretending to be a vault prompt.
+    if (target === 'storage' || target === 'companion' || target === 'unlock') {
+      void browser.runtime.openOptionsPage();
+      return;
+    }
+    // Anything else is a retry, and reusing the existing button keeps one sync entry point.
+    syncNowButton.click();
+  });
+
   function applySyncStatus(response: ExtensionResponse<unknown>): void {
     syncView = response.ok ? normalizeSyncStatus(response.data) : normalizeSyncStatus(null);
     renderSyncPanel();

@@ -206,34 +206,36 @@ export interface ErrorGuidance {
 
 /** Exhaustive by construction: every member of the `ErrorCode` union has a row, checked by a test. */
 export const ERROR_GUIDANCE: Record<ErrorCode, ErrorGuidance> = {
-  auth: { titleKey: 'guidance.auth', actionKey: 'guidance.auth.action', target: 'storage' },
-  scope: { titleKey: 'guidance.scope', actionKey: 'guidance.scope.action', target: 'storage' },
-  notFound: { titleKey: 'guidance.notFound', actionKey: 'guidance.notFound.action', target: 'sync' },
-  conflict: { titleKey: 'guidance.conflict', actionKey: 'guidance.conflict.action', target: 'sync' },
-  rateLimited: { titleKey: 'guidance.rateLimited', actionKey: 'guidance.rateLimited.action', target: 'retry' },
-  timeout: { titleKey: 'guidance.timeout', actionKey: 'guidance.timeout.action', target: 'retry' },
-  network: { titleKey: 'guidance.network', actionKey: 'guidance.network.action', target: 'retry' },
-  locked: { titleKey: 'guidance.locked', actionKey: 'guidance.locked.action', target: 'unlock' },
-  needVault: { titleKey: 'guidance.needVault', actionKey: 'guidance.needVault.action', target: 'unlock' },
-  wrongPassphrase: { titleKey: 'guidance.wrongPassphrase', actionKey: 'guidance.wrongPassphrase.action', target: 'unlock' },
-  passphraseTooShort: { titleKey: 'guidance.passphraseTooShort', actionKey: 'guidance.passphraseTooShort.action', target: 'unlock' },
-  badJson: { titleKey: 'guidance.badJson', actionKey: 'guidance.badJson.action', target: 'retry' },
-  emptyResponse: { titleKey: 'guidance.emptyResponse', actionKey: 'guidance.emptyResponse.action', target: 'retry' },
-  parse: { titleKey: 'guidance.parse', actionKey: 'guidance.parse.action', target: 'retry' },
-  publicRepo: { titleKey: 'guidance.publicRepo', actionKey: 'guidance.publicRepo.action', target: 'storage' },
-  notConfigured: { titleKey: 'guidance.notConfigured', actionKey: 'guidance.notConfigured.action', target: 'storage' },
-  validation: { titleKey: 'guidance.validation', actionKey: 'guidance.validation.action', target: 'sync' },
-  nativeUnavailable: { titleKey: 'guidance.nativeUnavailable', actionKey: 'guidance.nativeUnavailable.action', target: 'companion' },
-  protocolMismatch: { titleKey: 'guidance.protocolMismatch', actionKey: 'guidance.protocolMismatch.action', target: 'companion' },
-  gitFailed: { titleKey: 'guidance.gitFailed', actionKey: 'guidance.gitFailed.action', target: 'sync' },
-  syncConflict: { titleKey: 'guidance.syncConflict', actionKey: 'guidance.syncConflict.action', target: 'sync' },
-  indexUnavailable: { titleKey: 'guidance.indexUnavailable', actionKey: 'guidance.indexUnavailable.action', target: 'sync' },
-  unknown: { titleKey: 'guidance.unknown', actionKey: 'guidance.unknown.action', target: 'retry' },
+  auth: { titleKey: 'error.auth', actionKey: 'guidance.auth.action', target: 'storage' },
+  scope: { titleKey: 'error.scope', actionKey: 'guidance.scope.action', target: 'storage' },
+  notFound: { titleKey: 'error.notFound', actionKey: 'guidance.notFound.action', target: 'sync' },
+  conflict: { titleKey: 'error.conflict', actionKey: 'guidance.conflict.action', target: 'sync' },
+  rateLimited: { titleKey: 'error.rateLimited', actionKey: 'guidance.rateLimited.action', target: 'retry' },
+  timeout: { titleKey: 'error.timeout', actionKey: 'guidance.timeout.action', target: 'retry' },
+  network: { titleKey: 'error.network', actionKey: 'guidance.network.action', target: 'retry' },
+  locked: { titleKey: 'error.locked', actionKey: 'guidance.locked.action', target: 'unlock' },
+  needVault: { titleKey: 'error.needVault', actionKey: 'guidance.needVault.action', target: 'unlock' },
+  wrongPassphrase: { titleKey: 'error.wrongPassphrase', actionKey: 'guidance.wrongPassphrase.action', target: 'unlock' },
+  passphraseTooShort: { titleKey: 'error.passphraseTooShort', actionKey: 'guidance.passphraseTooShort.action', target: 'unlock' },
+  badJson: { titleKey: 'error.badJson', actionKey: 'guidance.badJson.action', target: 'retry' },
+  emptyResponse: { titleKey: 'error.emptyResponse', actionKey: 'guidance.emptyResponse.action', target: 'retry' },
+  parse: { titleKey: 'error.parse', actionKey: 'guidance.parse.action', target: 'retry' },
+  publicRepo: { titleKey: 'error.publicRepo', actionKey: 'guidance.publicRepo.action', target: 'storage' },
+  notConfigured: { titleKey: 'error.notConfigured', actionKey: 'guidance.notConfigured.action', target: 'storage' },
+  validation: { titleKey: 'error.validation', actionKey: 'guidance.validation.action', target: 'sync' },
+  nativeUnavailable: { titleKey: 'error.nativeUnavailable', actionKey: 'guidance.nativeUnavailable.action', target: 'companion' },
+  protocolMismatch: { titleKey: 'error.protocolMismatch', actionKey: 'guidance.protocolMismatch.action', target: 'companion' },
+  gitFailed: { titleKey: 'error.gitFailed', actionKey: 'guidance.gitFailed.action', target: 'sync' },
+  syncConflict: { titleKey: 'error.syncConflict', actionKey: 'guidance.syncConflict.action', target: 'sync' },
+  indexUnavailable: { titleKey: 'error.indexUnavailable', actionKey: 'guidance.indexUnavailable.action', target: 'sync' },
+  // Not a storage problem to fix by editing a field: the answer is 'start an empty repository'.
+  tierLocked: { titleKey: 'error.tierLocked', actionKey: 'guidance.tierLocked.action', target: 'storage' },
+  unknown: { titleKey: 'error.unknown', actionKey: 'guidance.unknown.action', target: 'retry' },
 };
 
 /** Guidance for a code, with a safe fallback so an unknown code can never render as nothing at all. */
 export function errorGuidance(code: ErrorCode): ErrorGuidance {
-  return ERROR_GUIDANCE[code] ?? { titleKey: 'guidance.unknown', actionKey: 'guidance.unknown.action', target: 'retry' };
+  return ERROR_GUIDANCE[code] ?? { titleKey: 'error.unknown', actionKey: 'guidance.unknown.action', target: 'retry' };
 }
 
 /** True when a probe result demands the red public-repository warning in the UI. */

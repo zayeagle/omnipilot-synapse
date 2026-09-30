@@ -1,10 +1,12 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 
 import {
   TEST_DRIFT_MARKER,
   captureSource,
+  dictText,
   launchExtension,
   localPathsFromCache,
+  pageLang,
   seedSettings,
   sendToExtension,
   retextRemoteRecord,
@@ -12,6 +14,7 @@ import {
   startFixtureServer,
   stubGitHub,
   testBodyOf,
+  type GitHubStub,
 } from './helpers';
 
 /**
@@ -37,10 +40,7 @@ interface SyncReportView {
 }
 
 /** `sync.now` returns the report in `data.report`; the prefs ride along for the status row. */
-async function runSync(
-  page: import('@playwright/test').Page,
-  reason = 'manual',
-): Promise<SyncReportView> {
+async function runSync(page: Page, reason = 'manual'): Promise<SyncReportView> {
   const reply = await sendToExtension(page, 'sync.now', { reason });
   if (!reply.ok) throw new Error('sync failed: ' + JSON.stringify(reply));
   return (reply.data as { report: SyncReportView }).report;
@@ -57,7 +57,7 @@ async function runSync(
  * visible to the very next sync.
  */
 async function editCachedRecordLocally(
-  page: import('@playwright/test').Page,
+  page: Page,
   path: string,
   edit: { title: string; body: string; capturedAt: string },
 ): Promise<void> {
@@ -244,6 +244,146 @@ test('TC-E2E-05 the same note changed on both sides keeps both versions in the r
     const state = (status.data as { state: { lastOutcome: string; conflicts: string[] } }).state;
     expect(state.lastOutcome).toBe('conflict');
     expect(state.conflicts).toEqual([path]);
+  } finally {
+    await extension.dispose();
+    await server.close();
+  }
+});
+/* ------------------------------------------------------------------ *
+ * TC-P4-E01 — resolving a conflict, three ways (F4)
+ * ------------------------------------------------------------------ */
+
+interface ConflictFixture {
+  server: Awaited<ReturnType<typeof startFixtureServer>>;
+  extension: Awaited<ReturnType<typeof launchExtension>>;
+  github: GitHubStub;
+  options: Page;
+  /** The original path — the remote version holds it until the user decides. */
+  path: string;
+  /** Our version's sibling, written by the engine beside the original. */
+  conflictPath: string;
+  localBody: string;
+  remoteBody: string;
+}
+
+/**
+ * Produce a real conflict — one note changed in the cache AND committed differently to the repository.
+ *
+ * The same shape as TC-E2E-05 above, because a resolution surface can only be tested against a conflict
+ * the engine actually recorded. Seeding happens in its own tab: the router's credential budget is 12
+ * requests per tab per minute, and a spec that both seeds and decides spends it twice.
+ */
+async function createConflict(): Promise<ConflictFixture> {
+  const server = await startFixtureServer();
+  const extension = await launchExtension();
+  const github = await stubGitHub(extension.context);
+  const seedTab = await extension.openOptions();
+  await seedSettings(seedTab, { securityMode: 'transparent' });
+  await seedTab.close();
+
+  const options = await extension.openOptions();
+  await captureSource(options, {
+    url: server.origin + '/article.html',
+    title: 'Spaced repetition',
+    text: TEST_DRIFT_MARKER,
+  });
+  await runSync(options);
+
+  const path = soleManifestItem(github).path;
+  const localBody = 'my own rewrite that must not be lost';
+  const remoteBody = 'the remote rewrite that keeps the path';
+  await editCachedRecordLocally(options, path, {
+    title: 'My own rewrite',
+    body: localBody,
+    capturedAt: '2099-01-02T00:00:00.000Z',
+  });
+  retextRemoteRecord(github, path, remoteBody, '2099-01-01T00:00:00.000Z');
+
+  const report = await runSync(options);
+  if (report.outcome !== 'conflict') {
+    throw new Error('expected a conflicted sync, got ' + report.outcome);
+  }
+  const conflictPath =
+    [...github.files.keys()].find((candidate) => candidate.includes('.conflict-')) ?? '';
+  if (conflictPath.length === 0) throw new Error('the engine recorded no conflict sibling');
+  return { server, extension, github, options, path, conflictPath, localBody, remoteBody };
+}
+
+/**
+ * Open the 同步 tab and return the page's language.
+ *
+ * The tab re-reads the status when it is activated, because a background sync can record a conflict while
+ * the page sits open — without that, this spec would be asserting on a screen that cannot be right.
+ */
+async function openSyncTab(options: Page): Promise<string> {
+  const lang = await pageLang(options);
+  await options.getByRole('tab', { name: dictText(lang, 'options.tab.sync'), exact: true }).click();
+  return lang;
+}
+
+test('TC-P4-E01 keep-mine puts our version back at the original path and archives the remote one', async () => {
+  const fixture = await createConflict();
+  const { server, extension, github, options, path, conflictPath, localBody, remoteBody } = fixture;
+  try {
+    const lang = await openSyncTab(options);
+    const card = options.locator('section.card', {
+      hasText: dictText(lang, 'options.sync.conflicts.title'),
+    });
+
+    // The conflict is listed with both paths, and the three resolutions are all offered.
+    await expect(card).toContainText(path);
+    await expect(card).toContainText(conflictPath);
+    for (const key of [
+      'options.sync.conflict.keepMine',
+      'options.sync.conflict.keepTheirs',
+      'options.sync.conflict.keepBoth',
+    ]) {
+      await expect(card.getByRole('button', { name: dictText(lang, key), exact: true })).toBeVisible();
+    }
+
+    await card
+      .getByRole('button', { name: dictText(lang, 'options.sync.conflict.keepMine'), exact: true })
+      .click();
+    // The decision lands immediately: the row leaves the list rather than waiting for another sync.
+    await expect(
+      card.getByRole('button', { name: dictText(lang, 'options.sync.conflict.keepMine'), exact: true }),
+    ).toHaveCount(0, { timeout: 15_000 });
+    await expect(card).toContainText(dictText(lang, 'options.sync.conflicts.empty'));
+    console.log('DIAG path=' + testBodyOf(github.files.get(path) ?? 'MISSING'));
+    console.log('DIAG archive=' + testBodyOf(github.files.get('archive/conflicts/' + path) ?? 'MISSING'));
+    console.log('DIAG sibling=' + (github.files.get(conflictPath) ?? 'MISSING').slice(0, 60));
+
+    // Ours is back at the original path, and theirs was archived — not deleted, not overwritten.
+    expect(testBodyOf(github.files.get(path) ?? '')).toContain(localBody);
+    expect(testBodyOf(github.files.get('archive/conflicts/' + path) ?? '')).toContain(remoteBody);
+    // The sibling is a signpost now, and it says where the content went.
+    expect(github.files.get(conflictPath) ?? '').toContain('<!-- omnipilot:tombstone -->');
+  } finally {
+    await extension.dispose();
+    await server.close();
+  }
+});
+
+test('TC-P4-E01 keep-both decides without writing and leaves both versions in the repository', async () => {
+  const fixture = await createConflict();
+  const { server, extension, github, options, path, conflictPath, localBody, remoteBody } = fixture;
+  try {
+    const commitsBefore = github.commitCount();
+    const lang = await openSyncTab(options);
+    const card = options.locator('section.card', {
+      hasText: dictText(lang, 'options.sync.conflicts.title'),
+    });
+    await expect(card).toContainText(path);
+
+    await card
+      .getByRole('button', { name: dictText(lang, 'options.sync.conflict.keepBoth'), exact: true })
+      .click();
+    await expect(card).toContainText(dictText(lang, 'options.sync.conflicts.empty'), { timeout: 15_000 });
+
+    // Choosing 'both' decides without touching the repository — the one action a locked vault can take.
+    expect(github.commitCount()).toBe(commitsBefore);
+    expect(testBodyOf(github.files.get(path) ?? '')).toContain(remoteBody);
+    expect(testBodyOf(github.files.get(conflictPath) ?? '')).toContain(localBody);
   } finally {
     await extension.dispose();
     await server.close();

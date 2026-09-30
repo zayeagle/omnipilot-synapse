@@ -26,6 +26,8 @@ let companionState: 'ok' | 'missing' | 'mismatch' = 'ok';
 /** What the stubbed worker answers for `cards.list` (F3). */
 let cardListFailure: string | null = null;
 let pendingCards: unknown[] = defaultPendingCards();
+/** Authorization mode the stubbed `settings.export` reports (F5/T5.2). */
+let exportedAuth: { mode: string; repoRoot: string } = { mode: 'token', repoRoot: '' };
 
 /**
  * One readable proposal and one whose body could not be read: the second is the interesting one, because the
@@ -69,9 +71,13 @@ function reply(message: unknown): unknown {
             enabled: true,
             aiAuthorized: true,
             securityMode: 'vault',
+            // The tier question is already answered in this fixture; the gate has its own spec.
+            contentTierChosen: true,
             autoLockMinutes: 30,
             github: { owner: 'zayeagle', repo: 'kb', branch: 'main', pathPrefix: '', apiBase: '' },
             ai: { providerId: 'openai', model: 'gpt-4o-mini', baseUrl: '' },
+            authMode: exportedAuth.mode,
+            ssh: { host: 'github.com', user: 'git', keyRef: 'default', repoRoot: exportedAuth.repoRoot },
           },
           secretsPresent: { githubPat: true, providerKey: true },
         },
@@ -303,6 +309,7 @@ beforeEach(() => {
   companionState = 'ok';
   cardListFailure = null;
   pendingCards = defaultPendingCards();
+  exportedAuth = { mode: 'token', repoRoot: '' };
   installChrome();
   // The UI language is decided once, when the page module is first evaluated.
   Object.defineProperty(navigator, 'language', { value: 'zh-CN', configurable: true });
@@ -442,6 +449,28 @@ describe('options 存储 authorization + branch (F5 UNIT)', () => {
     expect(text).toContain('需要该仓库的本地克隆');
     // The key field is a REFERENCE, never key material.
     expect(text).toContain('密钥（引用名）');
+  });
+
+  it('TC-P6-U03 hands the user the exact clone command, and refuses a path that would fail later (T5.2)', async () => {
+    exportedAuth = { mode: 'ssh', repoRoot: '/srv/kb' };
+    const app = await mount(() => import('../../entrypoints/options/main'));
+    const store = app.querySelectorAll('section.card')[1] as HTMLElement;
+    const command = [...store.querySelectorAll('code')]
+      .map((node) => node.textContent ?? '')
+      .find((value) => value.startsWith('git clone'));
+    expect(command).toBe('git clone git@github.com:zayeagle/kb.git /srv/kb');
+    // The copy action travels with the command, or the user has to select it by hand.
+    const copy = [...store.querySelectorAll('button')].find((node) =>
+      (node.textContent ?? '').includes('复制命令'),
+    );
+    expect(copy).toBeDefined();
+
+    // A relative path is refused on our screen instead of in the user's terminal.
+    exportedAuth = { mode: 'ssh', repoRoot: 'kb' };
+    const broken = await mount(() => import('../../entrypoints/options/main'));
+    expect((broken.querySelectorAll('section.card')[1] as HTMLElement).textContent ?? '').toContain(
+      '请填绝对路径',
+    );
   });
 
   it('TC-F5-U01 disables SSH and explains why when no companion is installed', async () => {

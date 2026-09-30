@@ -113,6 +113,13 @@ export interface SecuritySettingsPayload {
    * that can disagree.
    */
   authMode?: AuthMode;
+  /**
+   * Whether the user has now made the content-tier choice explicitly (T7).
+   *
+   * Travels here rather than in its own message because the storage form's save already carries
+   * this payload, and two round trips for one decision could disagree.
+   */
+  contentTierChosen?: boolean;
 }
 
 export interface SecretPayloadPatch {
@@ -385,6 +392,8 @@ export type ErrorCode =
   | 'syncConflict'
   /** The local search index is missing or corrupt and must be rebuilt. */
   | 'indexUnavailable'
+  /** The content tier cannot be changed here: the repository already holds content (R8). */
+  | 'tierLocked'
   | 'unknown';
 
 export interface OkResponse<T = unknown> {
@@ -745,6 +754,12 @@ export function validateSecuritySettings(payload: unknown): SecuritySettingsPayl
     out.autoLockMinutes = Math.min(720, Math.max(1, Math.round(minutes)));
   }
   if (raw['authMode'] !== undefined) out.authMode = validateAuthMode(raw['authMode']);
+  if (raw['contentTierChosen'] !== undefined) {
+    if (typeof raw['contentTierChosen'] !== 'boolean') {
+      throw new MessageError('contentTierChosen must be a boolean');
+    }
+    out.contentTierChosen = raw['contentTierChosen'];
+  }
   return out;
 }
 
