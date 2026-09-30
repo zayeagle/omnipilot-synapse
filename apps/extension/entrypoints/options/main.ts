@@ -39,7 +39,7 @@ import {
   type AuthModeAvailability,
 } from '../../lib/ui/auth-form';
 import { parseInnerPath, parseRepoAddress, repoAddressOf } from '../../lib/ui/repo-address';
-import { requiresTrustAck } from '../../lib/providers';
+import { hostOfEndpoint, requiresTrustAck } from '../../lib/providers';
 import { isPublicRepoWarning, visibilityLabel } from '../../lib/status';
 import type { StoreProbe } from '../../lib/store/types';
 import {
@@ -101,6 +101,7 @@ import {
   type SettingsForm,
   type SyncStatusView,
   type VaultInfo,
+  trustedHostsOf,
 } from '../../lib/ui/format';
 
 const LANG: Lang = detectLang(typeof navigator === 'undefined' ? null : navigator.language);
@@ -918,7 +919,14 @@ function main(): void {
     }
   }
 
-  function applyFormToInputs(): void {
+  let storedTrustedHosts: string[] = [];
+
+function endpointAlreadyTrusted(baseUrl: string): boolean {
+  const host = hostOfEndpoint(baseUrl);
+  return host.length > 0 && storedTrustedHosts.includes(host);
+}
+
+function applyFormToInputs(): void {
     providerSelect.select.value = form.providerId;
     if (providerSelect.select.value !== form.providerId) {
       // A stored id that is no longer in the catalogue is treated the way `resolveProvider` would.
@@ -948,6 +956,7 @@ function main(): void {
     // The picker's options already exist (paintDefaults builds them), so the stored mode can be
     // selected here; `renderAuthModes` then rebuilds without losing it.
     authModeSelect.select.value = form.authMode;
+    trustCheckbox.input.checked = endpointAlreadyTrusted(form.baseUrl);
   }
 
   /* -------------------------------- providers ------------------------------ */
@@ -1499,6 +1508,7 @@ function main(): void {
       const presence = secretsPresence(exported.data);
       hasPat = presence.githubPat;
       hasKey = presence.providerKey;
+      storedTrustedHosts = trustedHostsOf(exported.data);
     } else {
       showErrorCode(exported.code);
     }

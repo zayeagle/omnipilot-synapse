@@ -996,6 +996,19 @@ token 存在 **vault** 里，所以保险库锁着时 `toPublicPrefs` 会把 `ha
 
 **验证**：tsc 0 · UNIT 614 · INT 120。
 
+### 修复：信任勾选是只写不读（2026-09-30）
+
+根因不是监听器（原先的怀疑），而是**这个存储值没有渲染路径**：勾选在保存时写进 ai.trustedHosts，而 applyFormToInputs 逐个还原了所有存储字段，唯独漏了它。于是每次加载都显示未勾选、自定义端点的保存继续被拦（validateProviderForm 要求勾选），用户只能再勾一次 —— 永远打转。
+
+修法：
+- lib/providers.ts 新增 hostOfEndpoint(baseUrl)（按 host 比较，路径与查询串不影响匹配）
+- lib/ui/format.ts 新增 trustedHostsOf(value)（防御式读取导出数据里的 ai.trustedHosts）
+- options/main.ts：loadAll 记住 storedTrustedHosts；applyFormToInputs 用它渲染勾选状态（与其它存储字段一致）。**一个被保存却不被渲染的字段，对用户来说等于没保存。**
+
+测试：新增 lib/ui/trust-render.test.ts 两条（TC-F5-U07 读取与容错、TC-F5-U08 按 host 比较）。
+
+验证：tsc 0 · UNIT 616 / 57 · INT 120 · build 0（417.4 kB）· assert:content OK。基线 UNIT -> 616。
+
 ### 用户报障：剪藏提示「请先配置 GitHub 存储」（两道问题叠在一起）
 
 **① 本轮自己引入的 CSS 回归**：为 popup 加的 `section { display: flex }` 是**作者样式**，它盖掉了浏览器内置的 `[hidden] { display: none }` —— 于是 `section.hidden = true` **静默失效**，「一行说明」与三个空区块同时出现。已补 `section[hidden], [hidden] { display: none }` 并写明原因（`hidden` 是 popup 隐藏不可读区块的机制，不能被自己的 `display` 悄悄废掉）。

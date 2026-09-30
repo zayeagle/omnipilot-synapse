@@ -736,6 +736,13 @@ export function formToGithubPayload(form: GithubForm): GithubSettingsPayload {
   return payload;
 }
 
+export function trustedHostsOf(value: unknown): string[] {
+  const ai = asRecord(asRecord(value)?.["ai"]);
+  const hosts = ai?.["trustedHosts"];
+  if (!Array.isArray(hosts)) return [];
+  return hosts.filter((host): host is string => typeof host === "string" && host.length > 0);
+}
+
 export interface ProviderForm {
   providerId: string;
   model: string;

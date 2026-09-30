@@ -186,6 +186,15 @@ export function isValidBaseUrl(url: unknown): boolean {
  * An empty/absent URL is not an endpoint yet (nothing will be sent), so it does not need an ack; a
  * non-empty URL that cannot even be parsed fails closed and does.
  */
+export function hostOfEndpoint(baseUrl: string | null | undefined): string {
+  if (typeof baseUrl !== "string" || baseUrl.trim().length === 0) return "";
+  try {
+    return new URL(baseUrl.trim()).host;
+  } catch {
+    return "";
+  }
+}
+
 export function requiresTrustAck(baseUrl: string | null | undefined): boolean {
   if (typeof baseUrl !== 'string') return false;
   const trimmed = baseUrl.trim();
