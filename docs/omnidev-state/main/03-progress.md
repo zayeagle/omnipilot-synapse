@@ -863,6 +863,65 @@ companion 本需求未改动任何源码，因此它的绿是「没被顺手破�
 | extension E2E | **19 passed** |
 | build / assert:content | 0（392.77 kB）· OK |
 | companion tsc / UNIT / SYS | 0 · **48** · **8** |
+### 用户报障修复：`Cannot create item with duplicate id synapse-clip-page`（2026-09-30）
+
+**现象**：`chrome://extensions` 的服务工作线程错误面板报 `Unchecked runtime.lastError: Cannot create item with duplicate id synapse-clip-page`。
+
+**根因（不是"忘了 removeAll"，是一次竞态）**：`bootstrap()` 有三个入口 —— `runtime.onInstalled`、`runtime.onStartup`、以及模块自身的顶层调用；首次安装时 `onInstalled` 在 worker **仍在求值**时就触发，于是两次 `removeAll() + create()` **交错**：第二次 `create` 撞上刚被创建的同名 id。而且两次 `create` 的 promise 都没被 `await`，所以失败没有进 try/catch，而是以 Chrome 的 `runtime.lastError`（未读取）形式冒到扩展页。
+
+**修复**：
+
+- 新增 `lib/single-flight.ts`：`singleFlight(task)` 保证同一时刻只跑一次 boot；并发调用者共享在飞的那次，settle 后清空槽位（回收的 worker 仍能重新启动）。
+- `entrypoints/background.ts`：三个入口统一走 `singleFlight(bootstrap)`，并统一 `.catch` 记录；两次 `create` 改为 **await**，让"id 已被占用"这种事落进既有 try/catch 并以 `console.warn` 留痕，而不是变成 unchecked 错误。
+- 测试：`lib/single-flight.test.ts` 三条（并发只跑一次 / settle 后可再次 boot / 任务失败后槽位清空可重试 —— 最后一条防止"一次性 wedge"这种更隐蔽的回归）。
+
+**验证**：extension tsc 0 · UNIT **603 / 53** · INT **120** · E2E **19 / 19** · build 0 · `assert:content` OK。基线 UNIT 600 → **603**（[AGENTS.md](../../AGENTS.md)）。
+### 用户反馈：存储表单过于复杂（2026-09-30）
+
+**反馈**：填写项太多、且没有任何字段说明。要求收到「至少两个，最多三个」：token · 仓库地址 · 可选的仓库内部地址。
+
+**改前**：五个无说明的输入框（拥有者 / 仓库 / 分支 / 路径前缀 / API 地址）—— 把 GitHub 的内部词汇直接摊给用户。
+
+**改后（主区 2 必填 + 1 可选，每个字段下面都有一句人话）**：
+
+1. **GitHub Token**（沿用既有的一句权限说明）
+2. **仓库地址**：接受 `https://github.com/owner/repo`、`owner/repo`、`git@github.com:owner/repo.git`；带 `/tree/<分支>` 的网址会顺带设定分支（并写回高级里的分支字段，**覆盖是可见的**）
+3. **仓库内部目录（可选）**：留空 = 仓库根；只写相对目录如 `kb`
+
+其余（分支 / API 地址 / 授权方式与 SSH 区块 / 检查分支）收进 **高级**（`<details>`，默认折叠；内容仍在 DOM 里，所以既有的 render 断言与 E2E 不受影响）。
+
+**顺带堵掉上一轮暴露的坑**：
+
+- `parseInnerPath` 拒绝含 `:` · `\` · `//` 的输入，并要求每段只含字母数字与 `-` `_`（**不允许点**）—— 所以把域名粘错字段也会被拒。以前 `https://github.com/zayeagle/` 能通过校验，并被写成目录名 `https:`。
+- 地址解析失败时：**字段下方就地报错** · **禁用保存** · **探测与保存都被拦下**（否则会拿旧仓库去测新地址 —— 正是「看起来对、其实错」那一类）。
+
+**测试**：新增 `lib/ui/repo-address.test.ts` 六条（接受的写法 / 分支解析 / 拒绝原因 / 回填往返 / 空目录 / URL 与域名被拒）。
+**顺手清理**：`lib/ui/render.test.ts` 里遗留的 `describe('diagnostic') → dumps cards`（只 `console.log` 后 `expect(true).toBe(true)` 的脚手架测试）。
+
+**验证**：extension tsc 0 · UNIT **608 / 54** · INT **120** · E2E **19 / 19** · build 0（401.79 kB）· `assert:content` OK。
+### 用户报障修复：已配置仓库却提示「请先配置 GitHub 存储」（2026-09-30）
+
+**现象**：popup 顶部红框写「请先配置 GitHub 存储」，而同一屏的「仓库」行明明显示 `zayeagle/notes`；剪藏按钮被禁用。
+
+**根因**：`captureReadiness`（`lib/status.ts`）的判定顺序错了，而且错在一条**错误假设**上：
+
+```
+if (!prefs.repoFullName || !prefs.hasPat) return 'not-configured';   // ← 先判 hasPat
+if (prefs.securityMode === 'vault' && prefs.vaultLocked) return 'vault-locked';
+```
+
+token 存在 **vault** 里，所以保险库锁着时 `toPublicPrefs` 会把 `hasPat` 报成 false —— 于是「锁着」被误报成「没配置」。原本那句注释写着「透明模式不需要 vault」，但**内容不加密 ≠ 凭据不加密**：透明仓的 token 一样在 vault 里。用户的配置正是「透明仓 + 保险库已锁定」，必然命中这条错路。
+
+**修复**：
+
+1. 先判仓库地址，再判 vault：`(token 模式 || 内容档位=vault) && vaultLocked → vault-locked`；只有 vault 解锁后才可能落到 `not-configured`。
+2. **顺带修掉 SSH 的同类错误**：`!hasPat` 曾无条件拦截 —— SSH 用户的凭据来自伴生进程，不该因为没有 PAT 被说成「没配置」。新增 `companion-missing` 状态与文案「请先安装伴生进程以使用 SSH 模式」（原 R7 修复只改了 worker 侧，popup 侧漏了）。
+3. **收件箱不再说谎**：`inbox.list` 读取失败时，列表原本显示「收件箱是空的」（与「读不到」是两件事），改为「收件箱暂时读不到」。
+
+**断言的修正（A6）**：`status.test.ts` 里那条 `透明模式 + vaultLocked → ready` 的期望**编码了这个 bug**，已改为 `vault-locked` 并注明理由；新增 TC-F8-U06（SSH + 无 PAT + 无伴生进程 → `companion-missing`；伴生进程 ok → `ready`；vault 档位 + 锁定 → `vault-locked`）。
+
+
+
 
 ### E2E 补齐（T2.7 / T3.5 / T7.3，2026-09-29 第 42 轮）
 

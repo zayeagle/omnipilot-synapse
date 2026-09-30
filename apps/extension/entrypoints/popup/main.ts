@@ -393,7 +393,9 @@ function main(): void {
     clear(inboxList);
     if (!response.ok) {
       showError(response.code);
-      inboxList.appendChild(el('li', 'empty', t('popup.inboxEmpty', null, LANG)));
+      // Not empty: an Inbox that could not be read is a different fact, and saying empty would send the
+      // user looking for a capture that may well be there.
+      inboxList.appendChild(el('li', 'empty', t('popup.inboxUnavailable', null, LANG)));
       return;
     }
     const rows = inboxRows(response.data, INBOX_LIMIT);

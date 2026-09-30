@@ -38,6 +38,7 @@ import {
   type AuthForm,
   type AuthModeAvailability,
 } from '../../lib/ui/auth-form';
+import { parseInnerPath, parseRepoAddress, repoAddressOf } from '../../lib/ui/repo-address';
 import { requiresTrustAck } from '../../lib/providers';
 import { isPublicRepoWarning, visibilityLabel } from '../../lib/status';
 import type { StoreProbe } from '../../lib/store/types';
@@ -240,17 +241,28 @@ function main(): void {
     lang: LANG,
   });
   const patStored = el('p', 'hint', t('options.apiKeyStored', null, LANG));
-  const ownerInput = textField('options.store.owner', { maxLength: 100, lang: LANG });
-  const repoInput = textField('options.store.repo', { maxLength: 200, lang: LANG });
+  /*
+   * Two things a person actually knows — the repository's address, and the folder inside it — plus the
+   * token. Owner, repository and branch are derived from the address; the form used to ask for GitHub's
+   * own vocabulary, in five unlabelled boxes.
+   */
+  const repoAddressControl = fieldWithError('options.store.repoAddress', { maxLength: 300 });
+  const repoAddressHint = el('p', 'hint', t('options.store.repoAddress.hint', null, LANG));
+  const repoAddressField = el('div');
+  repoAddressField.append(repoAddressControl.root, repoAddressHint);
+  const innerPathControl = fieldWithError('options.store.innerPath', { maxLength: 500 });
+  const innerPathHint = el('p', 'hint', t('options.store.innerPath.hint', null, LANG));
+  const innerPathField = el('div');
+  innerPathField.append(innerPathControl.root, innerPathHint);
+
+  // Everything GitHub-shaped that the defaults already answer. Collapsed rather than removed: the branch
+  // stays selectable and the API base stays available for a self-hosted instance.
   const branchInput = textField('options.store.branch', { maxLength: 200, lang: LANG });
-  const prefixInput = textField('options.store.pathPrefix', { maxLength: 500, lang: LANG });
   const apiBaseInput = textField('options.store.apiBase', {
     maxLength: 2_048,
     placeholder: 'https://api.github.com',
     lang: LANG,
   });
-  const repoGrid = el('div', 'grid');
-  repoGrid.append(ownerInput.root, repoInput.root, branchInput.root, prefixInput.root, apiBaseInput.root);
 
   /* Authorization mode: the picker, the SSH block and the companion hint (F5). */
   const authModeSelect = selectField('options.auth.mode', [], undefined, LANG);
@@ -272,7 +284,7 @@ function main(): void {
   const sshTestButton = button(t('options.auth.ssh.testConnection', null, LANG));
   const sshGrid = el('div', 'grid');
   /** One SSH input plus the inline field message the validator fills in. */
-  function sshControl(labelKey: string, options: { maxLength: number }): { root: HTMLElement; input: HTMLInputElement; error: HTMLElement } {
+  function fieldWithError(labelKey: string, options: { maxLength: number }): { root: HTMLElement; input: HTMLInputElement; error: HTMLElement } {
     const field = textField(labelKey, { maxLength: options.maxLength, lang: LANG });
     const error = el('p', 'hint');
     error.dataset['kind'] = 'error';
@@ -280,10 +292,10 @@ function main(): void {
     field.root.append(error);
     return { root: field.root, input: field.input, error };
   }
-  const sshHostControl = sshControl('options.auth.ssh.host', { maxLength: 200 });
-  const sshUserControl = sshControl('options.auth.ssh.user', { maxLength: 100 });
-  const sshKeyControl = sshControl('options.auth.ssh.keyRef', { maxLength: 120 });
-  const sshRepoRootControl = sshControl('options.auth.ssh.repoRoot', { maxLength: 500 });
+  const sshHostControl = fieldWithError('options.auth.ssh.host', { maxLength: 200 });
+  const sshUserControl = fieldWithError('options.auth.ssh.user', { maxLength: 100 });
+  const sshKeyControl = fieldWithError('options.auth.ssh.keyRef', { maxLength: 120 });
+  const sshRepoRootControl = fieldWithError('options.auth.ssh.repoRoot', { maxLength: 500 });
   sshGrid.append(sshHostControl.root, sshUserControl.root, sshKeyControl.root, sshRepoRootControl.root);
   const sshBlock = el('div', 'card-body');
   sshBlock.append(
@@ -305,6 +317,19 @@ function main(): void {
   branchRow.append(branchCheckButton, createBranchButton);
   branchNoticeNode.hidden = true;
   createBranchButton.hidden = true;
+
+  const advancedBody = el('div', 'card-body');
+  advancedBody.append(
+    el('p', 'hint', t('options.store.advanced.hint', null, LANG)),
+    branchInput.root,
+    branchRow,
+    branchNoticeNode,
+    apiBaseInput.root,
+    authModeField,
+    sshBlock,
+  );
+  const advanced = el('details', 'advanced');
+  advanced.append(el('summary', undefined, t('options.store.advanced', null, LANG)), advancedBody);
 
   /*
    * First run: the content tier is a decision, not a default (T7). The question is asked once, here,
@@ -350,14 +375,12 @@ function main(): void {
   storeCard.body.append(
     tierBlock,
     tierSummary,
-    authModeField,
-    sshBlock,
     patInput.root,
     patStored,
-    repoGrid,
-    branchRow,
-    branchNoticeNode,
     scopeHint,
+    repoAddressField,
+    innerPathField,
+    advanced,
     visibilityBadge,
     probeButton,
     probeHint,
@@ -522,10 +545,19 @@ function main(): void {
     form.providerId = providerSelect.select.value;
     form.model = modelInput.input.value.trim();
     form.baseUrl = baseUrlInput.input.value.trim();
-    form.owner = ownerInput.input.value.trim();
-    form.repo = repoInput.input.value.trim();
+    // The address is the source of truth for owner/repository — and for the branch when it names one.
+    // An address that cannot be parsed leaves the stored values untouched, so a half-typed field can
+    // never silently point the next probe at the previous repository.
+    const address = parseRepoAddress(repoAddressControl.input.value);
+    if (address.ok) {
+      form.owner = address.value.owner;
+      form.repo = address.value.repo;
+      // Written back into the (advanced) field so the override is visible rather than implied.
+      if (address.value.branch !== undefined) branchInput.input.value = address.value.branch;
+    }
     form.branch = branchInput.input.value.trim() || 'main';
-    form.pathPrefix = prefixInput.input.value.trim();
+    const inner = parseInnerPath(innerPathControl.input.value);
+    form.pathPrefix = inner.ok ? inner.value : innerPathControl.input.value.trim();
     form.apiBase = apiBaseInput.input.value.trim();
     form.publicRepoAcknowledged = ackCheckbox.input.checked;
     form.securityMode = modeSelect.select.value === 'transparent' ? 'transparent' : 'vault';
@@ -540,6 +572,14 @@ function main(): void {
       keyRef: sshKeyControl.input.value || form.ssh.keyRef,
       repoRoot: sshRepoRootControl.input.value,
     };
+  }
+
+  /** Both storage fields parse — the gate the probe and the save share. */
+  function fieldsReadable(): boolean {
+    return (
+      parseRepoAddress(repoAddressControl.input.value).ok &&
+      parseInnerPath(innerPathControl.input.value).ok
+    );
   }
 
   /** The form's SSH block, as the validators take it. */
@@ -702,8 +742,24 @@ function main(): void {
         LANG,
       );
     }
-    saveStoreButton.disabled = saveStorageDisabled(probe, ackCheckbox.input.checked) || tierBlocksSave;
-    const hint = storageSaveBlocked(probe, ackCheckbox.input.checked, tierBlocksSave, LANG);
+    // Field-level truth first: an address that cannot be parsed says so where the user is looking, and it
+    // blocks the save instead of quietly probing the repository that is still stored.
+    const address = parseRepoAddress(repoAddressControl.input.value);
+    const inner = parseInnerPath(innerPathControl.input.value);
+    repoAddressControl.error.hidden = address.ok;
+    repoAddressControl.error.textContent = address.ok ? '' : t(address.messageKey, null, LANG);
+    innerPathControl.error.hidden = inner.ok;
+    innerPathControl.error.textContent = inner.ok ? '' : t(inner.messageKey, null, LANG);
+    const invalidMessage = address.ok ? (inner.ok ? '' : innerPathControl.error.textContent) : repoAddressControl.error.textContent;
+
+    saveStoreButton.disabled =
+      (invalidMessage?.length ?? 0) > 0 ||
+      saveStorageDisabled(probe, ackCheckbox.input.checked) ||
+      tierBlocksSave;
+    const hint =
+      (invalidMessage?.length ?? 0) > 0
+        ? invalidMessage ?? ''
+        : storageSaveBlocked(probe, ackCheckbox.input.checked, tierBlocksSave, LANG);
     storeMessage.hidden = hint.length === 0;
     storeMessage.textContent = hint;
   }
@@ -836,10 +892,9 @@ function main(): void {
     modelInput.input.value = form.model;
     baseUrlInput.input.value = form.baseUrl;
     apiKeyInput.input.value = '';
-    ownerInput.input.value = form.owner;
-    repoInput.input.value = form.repo;
+    repoAddressControl.input.value = repoAddressOf(form.owner, form.repo);
+    innerPathControl.input.value = form.pathPrefix;
     branchInput.input.value = form.branch;
-    prefixInput.input.value = form.pathPrefix;
     apiBaseInput.input.value = form.apiBase;
     patInput.input.value = '';
     modeSelect.select.value = form.securityMode;
@@ -905,6 +960,12 @@ function main(): void {
 
   async function probeStore(): Promise<void> {
     syncForm();
+    // Testing an address we cannot read would test the PREVIOUS repository while the field shows the new
+    // one — the exact 'plausible-looking lie' this form was rebuilt to remove.
+    if (!fieldsReadable()) {
+      renderStore();
+      return;
+    }
     const payload = currentGithubPayload();
     if (payload.owner.length === 0 || payload.repo.length === 0 || payload.branch.length === 0) {
       showErrorCode('validation');
@@ -936,6 +997,10 @@ function main(): void {
 
   async function saveStorageSection(): Promise<void> {
     syncForm();
+    if (!fieldsReadable()) {
+      renderStore();
+      return;
+    }
     // The tier gate the button reflects, re-checked here: a disabled button is an affordance, not a
     // boundary, and the answer is what makes this repository's contents predictable.
     if (needsTierChoice({ chosen: form.contentTierChosen || tierPicked })) {
@@ -1440,10 +1505,9 @@ function main(): void {
   saveProviderButton.addEventListener('click', () => void saveProviderSection());
 
   for (const control of [
-    ownerInput.input,
-    repoInput.input,
+    repoAddressControl.input,
+    innerPathControl.input,
     branchInput.input,
-    prefixInput.input,
     apiBaseInput.input,
   ]) {
     control.addEventListener('input', () => renderStore());

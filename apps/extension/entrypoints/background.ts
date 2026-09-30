@@ -20,6 +20,7 @@ import { MessageRouter, createRouterOptions } from '../lib/background/router';
 import { CaptureService } from '../lib/capture/service';
 import { detectLang, t } from '../lib/i18n';
 import { PAGE_CLIP_MESSAGE, type SenderLike } from '../lib/messages';
+import { singleFlight } from '../lib/single-flight';
 import { NativeClient, type NativePort } from '../lib/native/client';
 import { AiLedger, CaptureQueue } from '../lib/queues';
 import { SyncCache, createBestBackend } from '../lib/sync/cache';
@@ -207,20 +208,26 @@ export default defineBackground(() => {
     }
 
     // Menus are recreated idempotently; a failure here must not abort the rest of startup.
+    //
+    // `create` is AWAITED on purpose: a menu id that is somehow already taken rejects the call, and a
+    // floating promise would report it as an unchecked `runtime.lastError` on the extensions page
+    // instead of being caught here. The interleaving that used to cause exactly that is prevented by
+    // `singleFlight` around `bootstrap` (see below).
     try {
       await browser.contextMenus?.removeAll();
-      browser.contextMenus?.create({
+      await browser.contextMenus?.create({
         id: CLIP_PAGE_MENU_ID,
         title: t('popup.clipPage', null, lang),
         contexts: ['page', 'frame'],
       });
-      browser.contextMenus?.create({
+      await browser.contextMenus?.create({
         id: CLIP_SELECTION_MENU_ID,
         title: t('popup.clipSelection', null, lang),
         contexts: ['selection'],
       });
-    } catch {
+    } catch (error) {
       // Menu ids already taken, or the API is unavailable: the popup and bubble still work.
+      console.warn(`[synapse] context menus not registered :: ${String(error)}`);
     }
 
     // A stored session key survives a worker recycle within its TTL. The vault still starts locked
@@ -246,9 +253,16 @@ export default defineBackground(() => {
     }
   };
 
-  browser.runtime.onInstalled?.addListener(() => void bootstrap());
-  browser.runtime.onStartup?.addListener(() => void bootstrap());
-  void bootstrap();
+  // One boot at a time: `onInstalled` fires while the worker is already evaluating this module, and two
+  // overlapping boots interleave the menu registration above (which is how the duplicate-id error got
+  // onto the extensions page). Later events still boot again once the first run has settled.
+  const boot = singleFlight(bootstrap);
+  const start = (): void => {
+    void boot().catch((error) => console.warn(`[synapse] bootstrap failed :: ${String(error)}`));
+  };
+  browser.runtime.onInstalled?.addListener(start);
+  browser.runtime.onStartup?.addListener(start);
+  start();
 });
 
 /** WXT's storage API is typed over prefixed keys; our keys all come from `STORAGE_KEYS`. */

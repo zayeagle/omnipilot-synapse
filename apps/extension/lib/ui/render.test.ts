@@ -723,23 +723,3 @@ describe('popup 待处理 — the proposal decision surface (F3 UNIT)', () => {
     expect(text).not.toContain('没有待处理的提案');
   });
 });
-
-describe('diagnostic', () => {
-  it('dumps cards', async () => {
-    probeVisibility = 'public';
-    const app = await mount(() => import('../../entrypoints/options/main'));
-    const cards = [...app.querySelectorAll('section.card')] as HTMLElement[];
-    const info = cards.map((card, index) => {
-      const save = card.querySelector('button.primary') as HTMLButtonElement | null;
-      return {
-        index,
-        title: (card.querySelector('.card-title')?.textContent ?? '').slice(0, 20),
-        saveLabel: save?.textContent ?? '',
-        disabled: save?.disabled,
-        text: (card.textContent ?? '').slice(0, 80),
-      };
-    });
-    console.log('DIAG ' + JSON.stringify(info, null, 1));
-    expect(true).toBe(true);
-  });
-});

@@ -27,6 +27,8 @@ export const en: Dict = {
   'popup.saved': 'Saved to Inbox',
   'popup.duplicate': 'Already in Inbox',
   'popup.needSetup': 'Configure GitHub storage first',
+  'popup.needCompanion': 'Install the companion to use SSH mode',
+  'popup.inboxUnavailable': 'The Inbox could not be read',
   'popup.needUnlock': 'Unlock the vault first',
   'popup.openItem': 'Open',
   'popup.ready': 'Ready to clip',
@@ -102,10 +104,23 @@ export const en: Dict = {
   'options.cancel': 'Cancel',
 
   'options.store.pat': 'GitHub token (fine-grained, Contents: Read and write)',
-  'options.store.owner': 'Owner',
-  'options.store.repo': 'Repository',
+  'options.store.repoAddress': 'Repository address',
+  'options.store.repoAddress.hint':
+    'Paste the repository URL — https://github.com/zayeagle/notes — or just owner/repo. A /tree/<branch> URL also sets the branch.',
+  'options.store.repoAddress.required': 'Enter the repository address',
+  'options.store.repoAddress.invalid':
+    'That is not a repository address — use https://github.com/owner/repo or owner/repo',
+  'options.store.repoAddress.host':
+    'Only github.com is supported here — a self-hosted host belongs in the advanced API base',
+  'options.store.innerPath': 'Folder inside the repository (optional)',
+  'options.store.innerPath.hint':
+    'Leave empty to use the repository root. Otherwise a relative folder such as kb — a URL or a dotted name is refused.',
+  'options.store.innerPath.invalid':
+    'Use a simple folder name such as kb — letters, digits, "-" and "_" only (no URL, no ".", no backslash)',
+  'options.store.advanced': 'Advanced',
+  'options.store.advanced.hint':
+    'Branch, API base and SSH authorization — the defaults suit github.com + main.',
   'options.store.branch': 'Branch',
-  'options.store.pathPrefix': 'Path prefix',
   'options.store.apiBase': 'GitHub API base (advanced)',
   'options.store.probeHint':
     'Testing the connection saves this section first, then checks repository permissions and visibility.',
@@ -367,6 +382,8 @@ export const zh_CN: Dict = {
   'popup.saved': '已入收件箱',
   'popup.duplicate': '已在收件箱中',
   'popup.needSetup': '请先配置 GitHub 存储',
+  'popup.needCompanion': '请先安装伴生进程以使用 SSH 模式',
+  'popup.inboxUnavailable': '收件箱暂时读不到',
   'popup.needUnlock': '请先解锁保险库',
   'popup.openItem': '打开',
   'popup.ready': '可以剪藏',
@@ -440,10 +457,18 @@ export const zh_CN: Dict = {
   'options.cancel': '取消',
 
   'options.store.pat': 'GitHub Token（细粒度，Contents: Read and write）',
-  'options.store.owner': '拥有者',
-  'options.store.repo': '仓库',
+  'options.store.repoAddress': '仓库地址',
+  'options.store.repoAddress.hint':
+    '粘贴仓库地址，例如 https://github.com/zayeagle/notes；也可以只写 owner/repo。带 /tree/<分支> 的网址会顺带设定分支。',
+  'options.store.repoAddress.required': '请填写仓库地址',
+  'options.store.repoAddress.invalid': '这不是有效的仓库地址 —— 请用 https://github.com/owner/repo 或 owner/repo',
+  'options.store.repoAddress.host': '这里只支持 github.com —— 自建实例请填在「高级」的 API 地址里',
+  'options.store.innerPath': '仓库内部目录（可选）',
+  'options.store.innerPath.hint': '留空表示放在仓库根目录；否则填相对目录，例如 kb —— 不接受网址或带 “.” 的名字。',
+  'options.store.innerPath.invalid': '请用简单的目录名，例如 kb —— 只允许字母、数字、“-”、“_”（不要网址、不要 “.”、不要反斜杠）',
+  'options.store.advanced': '高级',
+  'options.store.advanced.hint': '分支、API 地址与 SSH 授权方式 —— 默认值适用于 github.com + main。',
   'options.store.branch': '分支',
-  'options.store.pathPrefix': '路径前缀',
   'options.store.apiBase': 'GitHub API 地址（高级）',
   'options.store.probeHint': '「测试连接」会先保存以上配置，再检查仓库权限与可见性。',
   'options.store.testFirst': '请先「测试连接」— 仓库通过验证后才能保存',

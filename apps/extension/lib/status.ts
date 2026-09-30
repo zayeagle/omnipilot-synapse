@@ -30,6 +30,7 @@ export type CaptureReadiness =
   | 'disabled'
   | 'not-configured'
   | 'vault-locked'
+  | 'companion-missing'
   | 'public-repo-blocked';
 
 export interface StatusInput {
@@ -44,8 +45,17 @@ export interface StatusInput {
 export function captureReadiness(input: StatusInput): CaptureReadiness {
   const { prefs, probe } = input;
   if (!prefs.enabled) return 'disabled';
-  if (prefs.repoFullName.length === 0 || !prefs.hasPat) return 'not-configured';
-  if (prefs.securityMode === 'vault' && prefs.vaultLocked) return 'vault-locked';
+  if (prefs.repoFullName.length === 0) return 'not-configured';
+  const tokenMode = prefs.authMode !== 'ssh';
+  // The token lives IN the vault, so a locked vault makes hasPat read false. Asking someone who has
+  // already configured a repository to configure storage is the plausible lie this surface exists to
+  // remove: unlocking is the thing they can actually do. The content tier is a SECOND reason the vault
+  // is needed, not the only one — the old check looked at the tier alone, which is exactly how a
+  // transparent repository ended up telling its owner that nothing was configured.
+  if ((tokenMode || prefs.securityMode === 'vault') && prefs.vaultLocked) return 'vault-locked';
+  if (tokenMode && !prefs.hasPat) return 'not-configured';
+  // SSH takes its credential from the companion, so a missing PAT must not block it (R7).
+  if (!tokenMode && prefs.companion !== 'ok') return 'companion-missing';
   if (probe && probe.visibility === 'public' && !probe.canWrite) return 'public-repo-blocked';
   return 'ready';
 }
@@ -60,6 +70,8 @@ export function readinessLabel(readiness: CaptureReadiness, lang?: Lang): string
       return t('popup.needSetup', null, lang);
     case 'vault-locked':
       return t('popup.needUnlock', null, lang);
+    case 'companion-missing':
+      return t('popup.needCompanion', null, lang);
     case 'public-repo-blocked':
       return t('error.publicRepo', null, lang);
     default:

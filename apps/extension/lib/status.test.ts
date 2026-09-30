@@ -57,10 +57,20 @@ describe('capture readiness (F8 UNIT)', () => {
     const vaultPrefs: PublicPrefs = { ...READY_PREFS, securityMode: 'vault', vaultLocked: true };
     expect(captureReadiness({ prefs: vaultPrefs, probe: null })).toBe('vault-locked');
     expect(captureReadiness({ prefs: { ...vaultPrefs, vaultLocked: false }, probe: null })).toBe('ready');
-    // Transparent mode does not need the vault at all.
-    expect(captureReadiness({ prefs: { ...READY_PREFS, vaultLocked: true }, probe: null })).toBe('ready');
+    // A transparent repository still needs the vault: what is locked away is the TOKEN, not the content.
+    // (This used to expect ready — it encoded the bug that told a configured user to configure storage.)
+    expect(captureReadiness({ prefs: { ...READY_PREFS, vaultLocked: true }, probe: null })).toBe('vault-locked');
   });
 
+  it('TC-F8-U06 tells an SSH user to install the companion, not to configure storage', () => {
+    const ssh: PublicPrefs = { ...READY_PREFS, authMode: 'ssh', hasPat: false, companion: 'missing' };
+    expect(captureReadiness({ prefs: ssh, probe: null })).toBe('companion-missing');
+    // The companion IS the credential in SSH mode, so the absence of a PAT must not block it (R7).
+    expect(captureReadiness({ prefs: { ...ssh, companion: 'ok' }, probe: null })).toBe('ready');
+    // A locked vault still blocks it when the CONTENT tier is the encrypted one.
+    const vaultSsh: PublicPrefs = { ...ssh, companion: 'ok', securityMode: 'vault', vaultLocked: true };
+    expect(captureReadiness({ prefs: vaultSsh, probe: null })).toBe('vault-locked');
+  });
   it('TC-F8-U03 blocks a public repository that has not been acknowledged', () => {
     const publicProbe = probe({ visibility: 'public', canWrite: false, warning: 'public-repo' });
     expect(captureReadiness({ prefs: READY_PREFS, probe: publicProbe })).toBe('public-repo-blocked');
