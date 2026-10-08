@@ -26,6 +26,7 @@ import {
   parseEnvelope,
   type EncryptedEnvelope,
 } from './security/crypto-key';
+import { base64ToBytes, bytesToBase64 } from './security/base64';
 import { KeySession, VaultLockedError, clampTtl } from './security/key-session';
 
 export type { PublicPrefs };
@@ -37,6 +38,8 @@ export const STORAGE_KEYS = {
   captureQueue: 'local:captureQueue',
   aiLedger: 'local:aiLedger',
   sessionKey: 'session:vaultKey',
+  /** Non-secret policy plus the key it authorizes; one record so the two cannot drift apart. */
+  unlockPolicy: 'local:unlockPolicy',
 } as const;
 
 export const SCHEMA_VERSION = 1;
@@ -120,11 +123,27 @@ export interface SecretPayload {
   providerKey: string;
 }
 
+/**
+ * How the vault session survives a restart.
+ *
+ * `strict` keeps the derived key in memory only: a browser restart means re-entering the passphrase.
+ * `remember` exports that key to local storage so the next start adopts it, which lowers the gate from
+ * knows-the-passphrase to can-read-this-browser-profile. The options page states that next to the
+ * control, and `strict` stays one click away. Neither setting touches the crypto: the envelope, the
+ * cached records and the capture queue stay sealed either way, so this is a gate, not a plaintext mode.
+ */
+export type UnlockPolicy = 'strict' | 'remember';
+
+/** The remembered key is a convenience, not a session: it may outlive an idle lock, not a profile. */
+export const REMEMBERED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
 export interface VaultStatus {
   configured: boolean;
   unlocked: boolean;
   expiresAt: number | null;
   remainingMs: number;
+  /** How the session survives a restart; see `UnlockPolicy`. */
+  unlockPolicy: UnlockPolicy;
 }
 
 export interface StorageAreaLike {
@@ -399,6 +418,85 @@ export class SettingsStore {
     return this.save(mergeSettings(current, patch));
   }
 
+  /**
+   * The stored unlock policy. An absent or unreadable value means `strict`: an install that never
+   * answered the question must not start remembering keys.
+   */
+  async getUnlockPolicy(): Promise<UnlockPolicy> {
+    const stored = await this.area.get(STORAGE_KEYS.unlockPolicy);
+    const raw = stored[STORAGE_KEYS.unlockPolicy];
+    const policy = typeof raw === 'object' && raw !== null ? (raw as { policy?: unknown }).policy : undefined;
+    if (policy === 'strict' || policy === 'remember') return policy;
+    // The owner's chosen default. It is disclosed on the Security page next to the control, and `strict`
+    // is one click away - a default that lowers a gate has to be visible, not silent.
+    return 'remember';
+  }
+
+  /** Switching policy also settles the key: strict must not leave a usable one behind. */
+  async setUnlockPolicy(policy: UnlockPolicy): Promise<void> {
+    await this.area.set({ [STORAGE_KEYS.unlockPolicy]: { policy } });
+    if (policy === 'strict') await this.refreshPublicPrefs();
+  }
+
+  /** The remembered key, or null. Never throws: a corrupt value is simply not a key. */
+  private async readRememberedKey(): Promise<string | null> {
+    const stored = await this.area.get(STORAGE_KEYS.unlockPolicy);
+    const raw = stored[STORAGE_KEYS.unlockPolicy];
+    const key = typeof raw === 'object' && raw !== null ? (raw as { key?: unknown }).key : undefined;
+    return typeof key === 'string' && key.length > 0 ? key : null;
+  }
+
+  /** Drop the remembered key. An explicit lock, or leaving remember mode, must mean exactly that. */
+  async forgetRememberedKey(): Promise<void> {
+    const policy = await this.getUnlockPolicy();
+    await this.area.set({ [STORAGE_KEYS.unlockPolicy]: { policy } });
+  }
+
+  /** Export the live key for the next start. Only under the remember policy; never a plaintext secret. */
+  private async rememberKey(key: CryptoKey): Promise<void> {
+    if ((await this.getUnlockPolicy()) !== 'remember') return;
+    const subtle = this.cryptoProvider?.subtle;
+    if (!subtle) return;
+    try {
+      const raw = await subtle.exportKey('raw', key);
+      await this.area.set({
+        [STORAGE_KEYS.unlockPolicy]: { policy: 'remember', key: bytesToBase64(new Uint8Array(raw)) },
+      });
+    } catch {
+      // A key that cannot be exported is not a reason to fail an unlock; the policy just does nothing.
+    }
+  }
+
+  /**
+   * Adopt the remembered key when the policy allows it. Returns whether the session is unlocked now,
+   * so the worker can report it without knowing how the key was kept.
+   */
+  async restoreRememberedKey(): Promise<boolean> {
+    if (!this.session) return false;
+    if ((await this.getUnlockPolicy()) !== 'remember') return false;
+    const stored = await this.readRememberedKey();
+    if (stored === null) return false;
+    const subtle = this.cryptoProvider?.subtle;
+    if (!subtle) return false;
+    try {
+      const key = await subtle.importKey(
+        'raw',
+        new Uint8Array(base64ToBytes(stored)),
+        { name: 'AES-GCM' },
+        true,
+        ['encrypt', 'decrypt'],
+      );
+      // Remembering means not asking again: the idle lock is for a session opened by hand.
+      this.session.setTtl(REMEMBERED_TTL_MS);
+      await this.session.adopt(key, this.now());
+      await this.refreshPublicPrefs();
+      return true;
+    } catch {
+      await this.forgetRememberedKey();
+      return false;
+    }
+  }
+
   async getEnvelope(): Promise<EncryptedEnvelope | null> {
     const stored = await this.area.get(STORAGE_KEYS.secretVault);
     const raw = stored[STORAGE_KEYS.secretVault];
@@ -419,6 +517,7 @@ export class SettingsStore {
       unlocked: status?.unlocked ?? false,
       expiresAt: status?.expiresAt ?? null,
       remainingMs: status?.remainingMs ?? 0,
+      unlockPolicy: await this.getUnlockPolicy(),
     };
   }
 
@@ -457,6 +556,7 @@ export class SettingsStore {
         extractable: true,
       });
       await this.session.adopt(key, this.now());
+      await this.rememberKey(key);
     }
     await this.refreshPublicPrefs();
   }
@@ -471,12 +571,16 @@ export class SettingsStore {
     // Throws WrongPassphraseError when the passphrase or the ciphertext is wrong.
     const plaintext = await openEnvelopeWithKey(key, envelope, this.cryptoProvider);
     if (this.session) await this.session.adopt(key, this.now());
+    await this.rememberKey(key);
     await this.refreshPublicPrefs();
     return parseSecrets(JSON.parse(plaintext) as unknown);
   }
 
   async lock(): Promise<void> {
     await this.session?.lock();
+    // An explicit lock forgets the remembered key: otherwise "lock" would mean "until the next request",
+    // which is not what the button says.
+    await this.forgetRememberedKey();
     await this.refreshPublicPrefs();
   }
 
@@ -563,6 +667,7 @@ export class SettingsStore {
       STORAGE_KEYS.publicPrefs,
       STORAGE_KEYS.captureQueue,
       STORAGE_KEYS.aiLedger,
+      STORAGE_KEYS.unlockPolicy,
     ]);
   }
 

@@ -73,7 +73,7 @@ import {
   LIMITS,
   type SecurityMode,
 } from '../messages';
-import type { SettingsStore } from '../settings-store';
+import type { SettingsStore, UnlockPolicy } from '../settings-store';
 import type { StatusData, VaultStatusData } from '../status';
 import { errorCodeOf, type HandlerMap } from './router';
 
@@ -408,12 +408,14 @@ function vaultStatusData(vault: {
   unlocked: boolean;
   expiresAt: number | null;
   remainingMs: number;
+  unlockPolicy: UnlockPolicy;
 }): VaultStatusData {
   return {
     configured: vault.configured,
     unlocked: vault.unlocked,
     expiresAt: vault.expiresAt,
     remainingMs: vault.remainingMs,
+    unlockPolicy: vault.unlockPolicy,
   };
 }
 
@@ -686,12 +688,18 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
           await recordTierChange(context, payload.securityMode);
         }
       }
+      // The unlock policy is a VAULT setting, not part of local:settings: it lives next to the key it
+      // authorizes, so the policy and the key cannot drift apart.
+      if (payload.unlockPolicy !== undefined) {
+        await context.settings.setUnlockPolicy(payload.unlockPolicy);
+      }
       const patched = await context.settings.patch(payload);
       return ok({
         enabled: patched.enabled,
         aiAuthorized: patched.aiAuthorized,
         securityMode: patched.securityMode,
         autoLockMinutes: patched.autoLockMinutes,
+        unlockPolicy: await context.settings.getUnlockPolicy(),
         // Echoed so the picker can confirm what was actually stored rather than assume.
         authMode: patched.authMode,
       });

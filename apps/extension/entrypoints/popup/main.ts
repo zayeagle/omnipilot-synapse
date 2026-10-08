@@ -43,6 +43,7 @@ import {
   normalizeSyncResult,
   normalizeSyncStatus,
   searchResultRows,
+  noteCapturePayload,
   selectionCapturePayload,
   statusPanel,
   type InboxRow,
@@ -196,7 +197,32 @@ function main(): void {
   const clipPageButton = button(t('popup.clipPage', null, LANG), 'primary');
   const clipSelectionButton = button(t('popup.clipSelection', null, LANG));
   const actions = el('div', 'row');
-  actions.append(clipPageButton, clipSelectionButton);
+  /*
+   * 写笔记: the protocol has carried mode note from the start with no surface that could send it, so
+   * the only way in was a web page. The panel stays collapsed until asked for: a capture surface that
+   * pushes a form at the user would break the zero-pressure rule.
+   */
+  const noteButton = button(t('popup.writeNote', null, LANG));
+  actions.append(clipPageButton, clipSelectionButton, noteButton);
+
+  const notePanel = el('section', 'compose');
+  const noteTitleInput = el('input', 'control');
+  noteTitleInput.type = 'text';
+  noteTitleInput.placeholder = t('popup.noteTitle', null, LANG);
+  const noteTextArea = el('textarea', 'control');
+  noteTextArea.rows = 6;
+  noteTextArea.placeholder = t('popup.noteBody', null, LANG);
+  const noteSaveButton = button(t('popup.noteSave', null, LANG), 'primary');
+  const noteCancelButton = button(t('popup.noteCancel', null, LANG));
+  const noteButtons = el('div', 'row');
+  noteButtons.append(noteSaveButton, el('span', 'spacer'), noteCancelButton);
+  notePanel.append(
+    el('h2', undefined, t('popup.writeNote', null, LANG)),
+    noteTitleInput,
+    noteTextArea,
+    noteButtons,
+  );
+  notePanel.hidden = true;
 
   /* readiness notice */
   const notice = el('p', 'notice');
@@ -333,6 +359,7 @@ function main(): void {
     header,
     switchRow,
     actions,
+    notePanel,
     notice,
     blockedHint,
     statusDetails,
@@ -362,6 +389,7 @@ function main(): void {
     busy = next;
     clipPageButton.textContent = next ? t('popup.working', null, LANG) : t('popup.clipPage', null, LANG);
     clipPageButton.disabled = next || !canClip;
+    noteButton.disabled = next || !canClip;
     clipSelectionButton.disabled = next || !canClip;
     refreshButton.disabled = next;
     syncNowButton.disabled = next || !canSync;
@@ -855,6 +883,43 @@ function main(): void {
       setBusy(false);
     }
   }
+
+  function setNoteOpen(open: boolean): void {
+    notePanel.hidden = !open;
+    if (open) noteTitleInput.focus();
+  }
+
+  /**
+   * Manual entry: compose a note and send it down the SAME capture path as a clip, so the commit, the
+   * index, the search shards and the vault policy all behave identically.
+   */
+  async function saveNote(): Promise<void> {
+    if (busy || !canClip) return;
+    const tabs = await browser.tabs.query({ active: true, currentWindow: true });
+    const payload = noteCapturePayload(noteTitleInput.value, noteTextArea.value, tabs[0]?.url);
+    if (!payload) {
+      // An empty note never becomes a round trip, and never a failed capture the user has to read.
+      toast.show(t('popup.noteEmpty', null, LANG), 'info');
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await send<CaptureResultData>({ type: 'capture.request', payload });
+      reportCapture(response);
+      // Cleared only after the worker answered: a transient failure queues the note, and wiping the text
+      // would suggest it was lost.
+      noteTitleInput.value = '';
+      noteTextArea.value = '';
+      setNoteOpen(false);
+      await refreshInbox();
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  noteButton.addEventListener('click', () => setNoteOpen(notePanel.hidden));
+  noteCancelButton.addEventListener('click', () => setNoteOpen(false));
+  noteSaveButton.addEventListener('click', () => void saveNote());
 
   async function distillRow(row: InboxRow, trigger: HTMLButtonElement): Promise<void> {
     const payload: DistillRequestPayload | null = distillPayloadFor(row.id, row.path);

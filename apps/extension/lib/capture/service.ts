@@ -122,13 +122,18 @@ export class CaptureService {
    * selection); when it is, the URL stands in so the record stays identifiable.
    */
   buildItem(payload: CaptureRequestPayload): SourceItem {
-    const isSelection = payload.mode !== 'page';
-    const text = isSelection ? (payload.selection ?? '') : (payload.body ?? '');
+    const isSelection = payload.mode === 'selection';
+    const isNote = payload.mode === 'note';
+    const text = payload.mode === 'page' ? (payload.body ?? '') : (payload.selection ?? '');
     const capturedAt = payload.capturedAt ? new Date(payload.capturedAt) : new Date(this.now());
+    // A NOTE is the user's own text: titled after its first line, and never an excerpt of a URL. A
+    // SELECTION is an excerpt, so it keeps the page it came from. A page keeps the URL fallback.
+    const firstLine = text.split('\n').map((line) => line.trim()).find((line) => line.length > 0) ?? '';
+    const fallbackTitle = isNote && firstLine.length > 0 ? firstLine : payload.url;
 
     return buildSourceItem({
       url: payload.url,
-      title: payload.title || payload.url,
+      title: payload.title || fallbackTitle,
       text,
       ...(payload.byline ? { byline: payload.byline } : {}),
       ...(payload.lang ? { lang: payload.lang } : {}),

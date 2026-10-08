@@ -480,6 +480,20 @@ function main(): void {
   const transparentConfirm = checkboxField('options.security.transparentConfirm', false, LANG);
   const transparentBlock = el('div', 'card-body');
   transparentBlock.append(transparentHint, transparentConfirm.root);
+  /*
+   * The unlock policy: the one setting whose trade-off is worth spelling out. A checkbox rather than a
+   * two-item select, because the question is yes/no - remember the key on this device, or not. The state
+   * lives here rather than in `form`: it is a vault setting, and it arrives with the vault's own status.
+   */
+  let rememberUnlock = false;
+  const rememberCheck = checkboxField('options.security.remember', false, LANG);
+  const rememberHint = el('p', 'hint', t('options.security.rememberHint', null, LANG));
+  const autoLockNotice = el('p', 'hint', t('options.security.autoLockOff', null, LANG));
+  autoLockNotice.hidden = true;
+  const rememberBlock = el('div', 'card-body');
+  rememberBlock.append(rememberCheck.root, rememberHint, autoLockNotice);
+  rememberCheck.input.addEventListener('change', () => renderUnlockPolicy());
+
   const autoLockInput = textField('options.security.autoLock', {
     type: 'number',
     value: String(DEFAULT_AUTO_LOCK_MINUTES),
@@ -506,6 +520,7 @@ function main(): void {
     modeSelect.root,
     transparentBlock,
     autoLockInput.root,
+    rememberBlock,
     vaultHint,
     vaultStatus,
     passphraseInput.root,
@@ -577,6 +592,7 @@ function main(): void {
     form.publicRepoAcknowledged = ackCheckbox.input.checked;
     form.securityMode = modeSelect.select.value === 'transparent' ? 'transparent' : 'vault';
     form.autoLockMinutes = clampAutoLockMinutes(autoLockInput.input.value);
+    rememberUnlock = rememberCheck.input.checked;
     form.aiAuthorized = aiAuthorize.input.checked;
     // The picker is rebuilt on every render, so an OLDER entity is left untouched rather than
     // cleared: a blank input means "not edited here", never "erase this".
@@ -926,6 +942,21 @@ function endpointAlreadyTrusted(baseUrl: string): boolean {
   return host.length > 0 && storedTrustedHosts.includes(host);
 }
 
+  /**
+   * Says what the current policy means, and settles the pair that would otherwise contradict: while the
+   * unlock is remembered the idle lock cannot fire, so it is disabled and labelled rather than left there
+   * looking useful.
+   */
+  function renderUnlockPolicy(): void {
+    const remembered = rememberCheck.input.checked;
+    rememberHint.textContent = t(
+      remembered ? 'options.security.rememberHint' : 'options.security.strictHint',
+      null,
+      LANG,
+    );
+    autoLockInput.input.disabled = remembered;
+    autoLockNotice.hidden = !remembered;
+  }
 function applyFormToInputs(): void {
     providerSelect.select.value = form.providerId;
     if (providerSelect.select.value !== form.providerId) {
@@ -942,6 +973,8 @@ function applyFormToInputs(): void {
     patInput.input.value = '';
     modeSelect.select.value = form.securityMode;
     autoLockInput.input.value = String(clampAutoLockMinutes(form.autoLockMinutes));
+    rememberCheck.input.checked = rememberUnlock;
+    renderUnlockPolicy();
     transparentConfirm.input.checked = false;
     ackCheckbox.input.checked = form.publicRepoAcknowledged;
     aiAuthorize.input.checked = form.aiAuthorized;
@@ -1077,7 +1110,12 @@ function applyFormToInputs(): void {
     // carrying one decision are two calls that can disagree.
     const stored = await send({
       type: 'settings.security',
-      payload: { authMode: form.authMode, securityMode: form.securityMode, contentTierChosen: true },
+      payload: {
+        authMode: form.authMode,
+        securityMode: form.securityMode,
+        contentTierChosen: true,
+        unlockPolicy: rememberUnlock ? 'remember' : 'strict',
+      },
     });
     if (!stored.ok) {
       showErrorCode(stored.code);
@@ -1516,6 +1554,7 @@ function applyFormToInputs(): void {
     if (status.ok) {
       const normalized = normalizeStatusPayload(status.data);
       vault = normalized.vault;
+      rememberUnlock = normalized.vault.unlockPolicy === 'remember';
       probe = normalized.probe;
       hasPat = hasPat || normalized.prefs.hasPat;
       hasKey = hasKey || normalized.prefs.hasKey;

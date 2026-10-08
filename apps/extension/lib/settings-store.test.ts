@@ -15,8 +15,8 @@ import {
   type VaultStatus,
 } from './settings-store';
 
-const UNLOCKED: VaultStatus = { configured: true, unlocked: true, expiresAt: 1, remainingMs: 1 };
-const LOCKED: VaultStatus = { configured: true, unlocked: false, expiresAt: null, remainingMs: 0 };
+const UNLOCKED: VaultStatus = { configured: true, unlocked: true, unlockPolicy: 'strict', expiresAt: 1, remainingMs: 1 };
+const LOCKED: VaultStatus = { configured: true, unlocked: false, unlockPolicy: 'strict', expiresAt: null, remainingMs: 0 };
 
 const SECRETS = {
   githubPat: 'github_pat_11ABCDEFG0123456789_abcdefghijklmnop',

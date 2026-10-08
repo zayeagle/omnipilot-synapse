@@ -106,6 +106,11 @@ export interface SecuritySettingsPayload {
   securityMode?: SecurityMode;
   autoLockMinutes?: number;
   /**
+   * How the vault session survives a restart. Travels with the other security choices, and lands in the
+   * vault's own record rather than in `local:settings`.
+   */
+  unlockPolicy?: 'strict' | 'remember';
+  /**
    * Which credential mode remote operations use.
    *
    * Travels on `settings.security` because it *is* a security choice, and because the storage form's
@@ -756,6 +761,12 @@ export function validateSecuritySettings(payload: unknown): SecuritySettingsPayl
       throw new MessageError('autoLockMinutes must be a positive number');
     }
     out.autoLockMinutes = Math.min(720, Math.max(1, Math.round(minutes)));
+  }
+  if (raw['unlockPolicy'] !== undefined) {
+    if (raw['unlockPolicy'] !== 'strict' && raw['unlockPolicy'] !== 'remember') {
+      throw new MessageError('unlockPolicy must be strict | remember');
+    }
+    out.unlockPolicy = raw['unlockPolicy'];
   }
   if (raw['authMode'] !== undefined) out.authMode = validateAuthMode(raw['authMode']);
   if (raw['contentTierChosen'] !== undefined) {

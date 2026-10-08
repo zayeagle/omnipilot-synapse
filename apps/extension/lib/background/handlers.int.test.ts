@@ -256,6 +256,43 @@ describe('authorization mode + content tier integrity (R7/R8 INT)', () => {
   });
 });
 
+describe('manual entry (F11 INT)', () => {
+  it('TC-F11-I01 a note written by hand lands in the Inbox as an ordinary source', async () => {
+    const worker = await configuredWorker();
+    const captured = await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/article',
+      title: '',
+      selection: 'My own words\nsecond line',
+    });
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) throw new Error('unreachable');
+    const path = (captured.data as { path: string }).path;
+    expect(path.startsWith('inbox/')).toBe(true);
+
+    const file = worker.files.get(path) ?? '';
+    // The body is the note, the title came from its first line, and the record is NOT an excerpt of the
+    // page it happened to be written next to - which is what `mode: note` used to be treated as.
+    expect(file).toContain('My own words');
+    // The frontmatter writer may quote a string scalar, so match the value, not one spelling of it.
+    expect(file).toMatch(/^title: "?My own words"?$/mu);
+    expect(file).not.toContain('excerpt_of');
+
+    // ... and the Inbox lists that very record (its title is pinned above, on the file itself).
+    const listed = await send(worker, 'inbox.list', { limit: 5 });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('unreachable');
+    const rows = listed.data as Array<{ path: string }>;
+    expect(rows.some((row) => row.path === path)).toBe(true);
+  });
+
+  /*
+   * TC-F11-I02 (queued when the store is transient) is deliberately not duplicated here: a note rides the
+   * same `CaptureService.capture` path as a selection, whose queueing on `isTransientStoreError` is already
+   * covered by the capture INT tests. Re-asserting it would test the harness, not the feature.
+   */
+});
+
 async function send(
   worker: ReturnType<typeof makeWorker>,
   type: string,

@@ -112,6 +112,21 @@ section {
   flex-direction: column;
 }
 
+.compose {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  border: 1px solid var(--op-line);
+  border-radius: 8px;
+  padding: 8px;
+}
+
+.compose textarea.control {
+  resize: vertical;
+  min-height: 96px;
+  font: inherit;
+}
+
 button.icon {
   display: inline-flex;
   align-items: center;

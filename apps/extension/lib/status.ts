@@ -12,6 +12,8 @@ import type { RepoVisibility, StoreProbe } from './store/types';
 
 /** Vault state as the UI sees it — never the key, never the passphrase. */
 export interface VaultStatusData {
+  /** How the vault session survives a restart; the Security page reads this (R8). */
+  unlockPolicy: 'strict' | 'remember';
   configured: boolean;
   unlocked: boolean;
   expiresAt: number | null;

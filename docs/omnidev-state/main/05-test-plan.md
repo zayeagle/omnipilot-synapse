@@ -1,24 +1,48 @@
 ---
-version: 5
-previous_version: 4
-artifact: 05-test-plan.md
-requirement_id: req-2026-09-30-synapse-auth-tier-integrity
-history_ref: 05-test-plan-history.md
+test_strategy_profile: frontend-M
+layers_required: [unit, integration, smoke, regression]
+e2e_tool: playwright
+e2e_required: false
+integration_required: true
+e2e_waiver: user instruction 2026-09-30, do not run the browser suite; manual acceptance instead
 ---
 
-# Test Plan (delta) — R7 / R8
+## Test Strategy Summary
+| Layer | Required | Tool | Command | TC Count |
+|-------|----------|------|---------|----------|
+| UNIT | yes | vitest | npm test | 6 |
+| INT | yes | vitest | npm run test:int | 2 |
+| E2E | WAIVED | playwright | npx playwright test | 0 |
+| SMK | yes | manual | - | 1 |
+| REG | yes | vitest | npm run test:reg | 1 |
 
-层次：UNIT 起步，跨模块（auth × store × handlers）加 INT；**本需求不加 E2E**（SSH 需要真实 companion 进程，浏览器内无法驱动；既有 19 条 E2E 作为回归基线）。
+## F11 - UNIT
+| TC-ID | Layer | Type | Target | Input | Expected | Mock |
+|-------|-------|------|--------|-------|----------|------|
+| TC-F11-U01 | UNIT | Happy | noteCapturePayload | title+text | mode note, url fallback, selection=text | none |
+| TC-F11-U02 | UNIT | Error | noteCapturePayload | empty text | null (refuse locally) | none |
+| TC-F11-U03 | UNIT | Boundary | noteCapturePayload | over-limit text | capped at LIMITS.selectionChars | none |
+| TC-F11-U04 | UNIT | Happy | buildItem(note) | title empty + two lines | title = first line, no excerptOf | none |
+| TC-F11-U05 | UNIT | Happy | buildItem(note) | title T | title T, body = text | none |
+| TC-F11-U06 | UNIT | Error | buildItem(selection) | selection payload | excerptOf still set (unchanged) | none |
 
-| TC-ID | 层 | 断言 |
-|-------|----|------|
-| TC-R7-U01 | UNIT | `createRepoStore` 与 `GitHubStore` 对同一批操作行为一致：`readIndex`/`readRecord`/`commitRecord`/`findExisting`/`fileUrl` |
-| TC-R7-U02 | UNIT | `isConfigured` 与真实能力一致：SSH + companion ok 时为 true，且此配置下不再有 store 操作返回 `notConfigured` |
-| TC-R7-I01 | INT | SSH 配置（fake native、**无 PAT**）下 `capture.request` 成功，且确实经 `git.write`/`git.commit`/`git.push` |
-| TC-R7-I02 | INT | 同一配置下 `cards.list` / `review.due` / `store.probe` 可用（SC-R7-02） |
-| TC-R8-U01 | UNIT | 记录 `vault` + 本机 `transparent` → 解析出的 mode 是 `vault`（SC-R8-01/02） |
-| TC-R8-I01 | INT | 仓库记录 vault、本机设置 transparent → 捕获落盘为 `.enc`，仓库里不出现明文正文 |
-| TC-R8-I02 | INT | 有内容时切换档位被拒（`TierMigrationRequiredError` → 可读失败码），空仓库时切换并写入 `config.json` |
-| TC-REG-AUTH-01 | REG | 既有 19 E2E + 117 INT + 600 UNIT 全绿（零回归） |
+## F11 - INT
+| TC-ID | Layer | Type | Target | Input | Expected | Mock |
+|-------|-------|------|--------|-------|----------|------|
+| TC-F11-I01 | INT | Happy | capture.request(mode note) | note payload | committed + index entry + inbox list | fake GitHub API |
+| TC-F11-I02 | INT | Failure | same, store transient | note payload | queued true, nothing lost | store throws |
 
-**SMK**：`npm run build && npm run assert:content`（内容包仍无密钥 / native 符号）。
+## E2E Flows
+| TC-ID | Layer | Flow | Steps | Expected |
+|-------|-------|------|-------|----------|
+| (waived) | E2E | 写笔记 | popup -> 写笔记 -> 填写 -> 保存 | Inbox 出现该条 —— 刷新扩展后由用户手工验收 |
+
+## Smoke Suite
+| TC-ID | Source-TC | Layer | Critical Path |
+|-------|-----------|-------|---------------|
+| TC-F11-S01 | TC-F11-I01 | SMK | 写一条笔记 -> 出现在 Inbox 与检索结果 |
+
+## Regression Suite
+| TC-ID | Layer | Module | Package | Type |
+|-------|-------|--------|---------|------|
+| TC-F11-R01 | REG | lib/capture, lib/ui | extension | 既有捕获/选区测试不受 note 修正影响 |

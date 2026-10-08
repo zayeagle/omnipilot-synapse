@@ -590,5 +590,8 @@
       "blocking_open": 0,
       "detail": "new write primitive (.omnipilot/config.json) is server-derived and rides the capture commit; never overwrites a recorded tier, never guesses for content without a record"
     }
-  ]
+  ],
+  "last_requirement": "req-2026-09-30-synapse-manual-entry",
+  "last_phase": 3,
+  "updated_at": "2026-10-08T10:54:18.367Z"
 }

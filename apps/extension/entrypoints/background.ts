@@ -191,6 +191,16 @@ export default defineBackground(() => {
     const settingsSnapshot = await settings.load();
     // Honour the user's auto-lock choice for the session already under way.
     session.setTtl(settingsSnapshot.autoLockMinutes * 60_000);
+    /*
+     * The remembered key is what makes the remember policy mean anything across a restart: adopting it
+     * here means every request path finds an unlocked session without asking. It is a no-op under the
+     * strict policy, and it never throws - a key that cannot be used is forgotten, not fatal.
+     */
+    try {
+      await settings.restoreRememberedKey();
+    } catch (error) {
+      console.warn(`[synapse] remembered unlock not restored :: ${String(error)}`);
+    }
     await settings.refreshPublicPrefs(settingsSnapshot);
   };
 

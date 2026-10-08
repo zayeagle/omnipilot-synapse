@@ -423,6 +423,34 @@ export function selectionCapturePayload(
   if (documentLanguage.length > 0) payload.lang = documentLanguage;
   return payload;
 }
+/** A note has no page: a stable synthetic URL keeps the record identifiable without pretending otherwise. */
+export const NOTE_URL = 'omnipilot:note';
+
+/**
+ * A note the user wrote by hand.
+ *
+ * `mode: 'note'` has been in the protocol since capture shipped, with no surface that could send it - which
+ * is what "no manual entry" meant. This mirrors `selectionCapturePayload`; the difference is the URL, which
+ * a note does not have, so it carries the synthetic one and the worker is told not to call it an excerpt.
+ * An empty body returns null: refusing locally is cheaper than a round trip that fails.
+ */
+export function noteCapturePayload(
+  title: unknown,
+  body: unknown,
+  sourceUrl?: unknown,
+): CaptureRequestPayload | null {
+  const text = typeof body === 'string' ? body.trim() : '';
+  if (text.length === 0) return null;
+  const pageUrl = safeText(sourceUrl, 4_096);
+  const firstLine = text.split('\n').map((line) => line.trim()).find((line) => line.length > 0) ?? '';
+  return {
+    mode: 'note',
+    url: pageUrl.length > 0 ? pageUrl : NOTE_URL,
+    // The worker repeats this fallback, so a record stays right even if a caller sends an empty title.
+    title: safeText(title, 500) || safeText(firstLine, 80),
+    selection: text.slice(0, 200_000),
+  };
+}
 
 /**
  * Chrome returns `InjectionResult[]`, Firefox a single result — normalise both to the raw value the
@@ -443,6 +471,8 @@ export function firstInjectionResult(raw: unknown): unknown {
 export interface VaultInfo {
   configured: boolean;
   unlocked: boolean;
+  /** How the session survives a restart; `strict` when the worker did not say. */
+  unlockPolicy: 'strict' | 'remember';
   expiresAt: number | null;
   remainingMs: number;
 }
@@ -454,7 +484,7 @@ export interface StatusPayload {
 }
 
 export function emptyVaultInfo(): VaultInfo {
-  return { configured: false, unlocked: false, expiresAt: null, remainingMs: 0 };
+  return { configured: false, unlocked: false, unlockPolicy: 'strict', expiresAt: null, remainingMs: 0 };
 }
 
 export function normalizeVaultInfo(value: unknown): VaultInfo {
@@ -465,6 +495,7 @@ export function normalizeVaultInfo(value: unknown): VaultInfo {
   return {
     configured: raw['configured'] === true,
     unlocked: raw['unlocked'] === true,
+    unlockPolicy: raw['unlockPolicy'] === 'remember' ? 'remember' : 'strict',
     expiresAt: typeof expiresAtRaw === 'number' && Number.isFinite(expiresAtRaw) ? expiresAtRaw : null,
     remainingMs:
       typeof remainingRaw === 'number' && Number.isFinite(remainingRaw) && remainingRaw > 0

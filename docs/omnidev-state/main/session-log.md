@@ -1,27 +1,48 @@
 ---
 branch: main
-last_phase: 2
-last_task_group: null
-timestamp: 2026-09-29T18:30:00+08:00
+last_phase: 5
+last_task_group: G1
+timestamp: 2026-10-08T10:45:03.564+08:00
 complexity: M
 complexity_effective: M
 status: completed
+phase5: skipped by user (no production deploy for an unpacked extension)
 spec_mode_active: true
-requirement_id: req-2026-09-30-synapse-auth-tier-integrity
-previous_requirement: req-2026-07-09-synapse-git-sync
+requirement_id: req-2026-09-30-synapse-manual-entry
+previous_requirement: req-2026-09-30-synapse-auth-tier-integrity
 state_files: ["00-project-context.md", "08-spec.md", "04-design.md", "05-test-plan.md", "02-plan.md"]
-active_feature: F10
-active_group: 0
+active_feature: F11
+active_group: 1
 context_hot: ["00-project-context.md", "docs/requirements/00-requirements.md §5B (form A: Git)"]
 mid_task: null
 mid_task_files: []
 resume_payload: null
 resume_payload_at: null
 pending_decision: null
-    - { id: cancel, command: "/od x" }
+phase0_decision: confirm+autopilot (phase0_complexity)
+waivers: ["e2e: user instruction 2026-09-30 (twice) - do not run the browser suite; manual acceptance for TC-F11-S01 instead"]
 autopilot: true
 ---
 
+## Session Goal — req-2026-09-30-synapse-manual-entry
+
+Implement 手工录入 (manual entry): the MVP input list already names 文本粘贴 (paste text) and 手动笔记
+(write a note) next to web clipping, but only web/selection capture is implemented. A manual entry must
+land in the Inbox as an ordinary CKF source record, through the same commit path as a capture.
+
+## Phase 0 Assessment — req-2026-09-30-synapse-manual-entry
+**Requirement Analysis**: the requirement doc lists four MVP inputs (`docs/requirements/00-requirements.md:90`): 文本粘贴、网页剪藏、本地文件、手动笔记. Only 网页剪藏 (link + body extraction) and 剪藏选区 ship today, so a user with no web page has no way into the knowledge base.
+**Project Structure**: frontend-only — extension (WXT + TypeScript, MV3 worker) with a Node native-messaging companion; no server.
+**Complexity Assessment**: M — the commit path, the CKF record shape and the Inbox already exist; the work is a new surface plus a payload kind, and it touches message classification and the storage form's assumptions.
+**Stability Level**: standard — single user, local data, no HA requirement.
+**Frontend Impact**: yes — a new entry surface (popup or a dedicated page) plus its i18n, and it must not add friction to the existing capture flow.
+**Test Strategy Hint**: frontend-M — UNIT for the payload/record mapping, INT for manual entry through the worker to a commit, E2E for the surface (E2E currently manual-dispatch only).
+**Recommended Strategy**: Phase 2 Plan → Phase 3 Dev → Phase 4 Test (Blueprint skipped at M).
+**Recommended Scope**: (a) paste-text / write-note entry that produces a source record in the Inbox; (b) title derivation when the user gives none; (c) tags optional, never required; (d) reuses `capture`-style commits so sync, search shards and the vault policy are unchanged.
+**Open question for Phase 2**: extend the existing `capture.request` payload with a manual kind (no new message type, no new rate-limit bucket) or add a dedicated message — the former is cheaper and keeps one commit path.
+**Confirmation Level**: reduced (M).
+
+<!-- 上一会话（req-2026-09-30-synapse-auth-tier-integrity）的内容保留在下方正文中；需求变更确认后按 B.14 归档到 session-log-history.md -->
 ## Session Goal
 
 Extend the shipped browser-extension MVP (0.1.0) so GitHub storage supports **two authorization modes
