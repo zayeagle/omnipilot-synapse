@@ -45,7 +45,7 @@ function stubFetch(options: { private?: boolean; reply?: string } = {}) {
   let commits = 0;
   const blobBySha = new Map<string, string>();
   const files = new Map<string, string>();
-  let pendingTree: Array<{ path: string; sha: string }> = [];
+  let pendingTree: Array<{ path: string; sha: string | null }> = [];
 
   const fetchImpl = async (input: string, init: RequestInit): Promise<Response> => {
     const method = (init.method ?? 'GET').toUpperCase();
@@ -108,11 +108,17 @@ function stubFetch(options: { private?: boolean; reply?: string } = {}) {
       return json({ sha });
     }
     if (method === 'POST' && url.endsWith('/git/trees')) {
-      pendingTree = (body as { tree?: Array<{ path: string; sha: string }> }).tree ?? [];
+      // sha null is a deletion in the Git Data API; the stub must honour it or every delete test
+      // would pass against a repository that still holds the file.
+      pendingTree = (body as { tree?: Array<{ path: string; sha: string | null }> }).tree ?? [];
       return json({ sha: 'treesha' });
     }
     if (method === 'POST' && url.endsWith('/git/commits')) {
       for (const entry of pendingTree) {
+        if (entry.sha === null) {
+          files.delete(entry.path);
+          continue;
+        }
         const content = blobBySha.get(entry.sha);
         if (content !== undefined) files.set(entry.path, content);
       }
@@ -291,6 +297,102 @@ describe('manual entry (F11 INT)', () => {
    * same `CaptureService.capture` path as a selection, whose queueing on `isTransientStoreError` is already
    * covered by the capture INT tests. Re-asserting it would test the harness, not the feature.
    */
+});
+
+describe('note archive (F12 INT)', () => {
+  it('TC-F12-I01 archiving a note moves the body, leaves a signpost and drops it from the Inbox', async () => {
+    const worker = await configuredWorker();
+    const captured = await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/a',
+      title: 'Disposable note',
+      selection: 'the body that must survive',
+    });
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) throw new Error('unreachable');
+    const path = (captured.data as { path: string }).path;
+
+    const listed = await send(worker, 'inbox.list', { limit: 5 });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('unreachable');
+    const row = (listed.data as Array<{ id: string; path: string }>).find((entry) => entry.path === path);
+    if (!row) throw new Error('the note is not in the Inbox');
+
+    const archived = await send(worker, 'source.archive', { id: row.id, path });
+    expect(archived.ok).toBe(true);
+    if (!archived.ok) throw new Error('unreachable');
+    const archivedPath = (archived.data as { archivedPath: string }).archivedPath;
+    expect(archivedPath).toBe('archive/sources/' + path);
+
+    // The body MOVED: present under archive/, and replaced by a signpost at the old address - never gone.
+    expect(worker.files.get(archivedPath) ?? '').toContain('the body that must survive');
+    expect(worker.files.get(path) ?? '').toContain('omnipilot:tombstone');
+
+    // And the Inbox stops offering it, which is what the user asked for.
+    const after = await send(worker, 'inbox.list', { limit: 5 });
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw new Error('unreachable');
+    expect((after.data as Array<{ path: string }>).some((entry) => entry.path === path)).toBe(false);
+  });
+});
+
+describe('note delete (F12 INT)', () => {
+  it('TC-F12-I02 deleting a note removes the file for good, with no tombstone and no archive copy', async () => {
+    const worker = await configuredWorker();
+    const captured = await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/gone',
+      title: 'Gone for good',
+      selection: 'delete me',
+    });
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) throw new Error('unreachable');
+    const path = (captured.data as { path: string }).path;
+    const listed = await send(worker, 'inbox.list', { limit: 5 });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('unreachable');
+    const row = (listed.data as Array<{ id: string; path: string }>).find((entry) => entry.path === path);
+    if (!row) throw new Error('the note is not in the Inbox');
+    expect(worker.files.has(path)).toBe(true);
+
+    const removed = await send(worker, 'source.delete', { id: row.id, path });
+    expect(removed.ok).toBe(true);
+
+    // Gone means gone: the path is not in the repository, and nothing was left behind under archive/.
+    expect(worker.files.has(path)).toBe(false);
+    expect([...worker.files.keys()].some((key) => key.startsWith('archive/sources/'))).toBe(false);
+
+    // The index dropped it too, so the Inbox stops offering a note that no longer exists.
+    const after = await send(worker, 'inbox.list', { limit: 5 });
+    expect(after.ok).toBe(true);
+    if (!after.ok) throw new Error('unreachable');
+    expect((after.data as Array<{ path: string }>).some((entry) => entry.path === path)).toBe(false);
+  });
+
+  it('TC-F12-I03 a delete whose index entry disagrees with the request is refused, not guessed', async () => {
+    const worker = await configuredWorker();
+    const captured = await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/other',
+      title: 'Kept',
+      selection: 'keep me',
+    });
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) throw new Error('unreachable');
+    const path = (captured.data as { path: string }).path;
+    const listed = await send(worker, 'inbox.list', { limit: 5 });
+    expect(listed.ok).toBe(true);
+    if (!listed.ok) throw new Error('unreachable');
+    const row = (listed.data as Array<{ id: string; path: string }>).find((entry) => entry.path === path);
+    if (!row) throw new Error('the note is not in the Inbox');
+
+    const refused = await send(worker, 'source.delete', { id: row.id, path: 'inbox/2020/01/elsewhere.md' });
+    expect(refused.ok).toBe(false);
+    if (refused.ok) throw new Error('unreachable');
+    expect(refused.code).toBe('conflict');
+    // Nothing was deleted by a refused delete.
+    expect(worker.files.has(path)).toBe(true);
+  });
 });
 
 async function send(

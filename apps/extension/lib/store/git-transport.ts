@@ -16,6 +16,7 @@
  */
 
 import { probeFromCompanion } from '../auth/ssh-auth';
+import { MessageError } from '../messages';
 import { NativeError, type NativeClient } from '../native/client';
 import {
   asGitLs,
@@ -157,8 +158,19 @@ export class GitTransportStore implements KnowledgeStore {
    * idempotent, so re-writing the same bytes produces no second commit), and the caller's dirty set
    * is only cleared once this promise resolves.
    */
-  async commitFiles(files: RepoFile[], message: string): Promise<CommitResult> {
-    if (files.length === 0) throw new NotConfiguredError('storage: refusing an empty commit');
+  async commitFiles(
+    files: RepoFile[],
+    message: string,
+    deleted: readonly string[] = [],
+  ): Promise<CommitResult> {
+    if (files.length === 0 && deleted.length === 0) {
+      throw new NotConfiguredError('storage: refusing an empty commit');
+    }
+    // The companion's write op can only add or overwrite. Reporting that is the honest answer; silently
+    // committing without the deletion would leave the user believing the note is gone.
+    if (deleted.length > 0) {
+      throw new MessageError('storage: this authorization mode cannot delete files yet', 'deleteUnsupported');
+    }
     const written = await this.send<GitWriteData>('git.write', {
       message,
       files: files.map((file) => ({ path: file.path, content: file.content })),

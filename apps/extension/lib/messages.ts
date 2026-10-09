@@ -19,6 +19,8 @@ export const REQUEST_TYPES = [
   'review.due',
   'capture.request',
   'capture.page',
+  'source.archive',
+  'source.delete',
   'distill.request',
   'store.probe',
   'auth.probe',
@@ -28,6 +30,9 @@ export const REQUEST_TYPES = [
   'sync.policy',
   'search.query',
   'search.rebuild',
+  // Writes to the repository, so it is extension-page only like everything else here.
+  'source.archive',
+  'source.delete',
   'settings.provider',
   'settings.github',
   'settings.security',
@@ -334,6 +339,10 @@ export interface RequestPayloads {
   'status.get': void;
   'inbox.list': { limit?: number };
   'capture.request': CaptureRequestPayload;
+  /** Archive one captured note: the body moves to archive/sources/, the path keeps a tombstone. */
+  'source.archive': { id: string; path: string };
+  /** Remove a captured note from the repository for good. Irreversible; needs explicit confirmation. */
+  'source.delete': { id: string; path: string };
   /** Ask the worker to clip the active tab: it resolves the tab and drives the content script. */
   'capture.page': { distill?: boolean };
   'distill.request': DistillRequestPayload;
@@ -403,6 +412,8 @@ export type ErrorCode =
   | 'needToken'
   /** One commit carried more files than the guard allows (search-shard fan-out). */
   | 'commitTooLarge'
+  /** This authorization mode cannot remove a file from the repository (SSH companion). */
+  | 'deleteUnsupported'
   | 'unknown';
 
 export interface OkResponse<T = unknown> {
@@ -675,6 +686,22 @@ export function validateCaptureRequest(payload: unknown): CaptureRequestPayload 
     out.distill = raw['distill'];
   }
   return out;
+}
+
+export function validateSourceArchive(payload: unknown): { id: string; path: string } {
+  const raw = requireRecord(payload);
+  // Same shape and limits as `validateCardDecide`: one vocabulary for "which record, at which path".
+  const id = requireString(raw['id'], 'id', 200);
+  const path = requireString(raw['path'], 'path', 1_000);
+  if (path.startsWith('/') || path.includes('..') || path.includes('\\')) {
+    throw new MessageError('path must be a repository-relative path');
+  }
+  return { id, path };
+}
+
+export function validateSourceDelete(payload: unknown): { id: string; path: string } {
+  // Same target shape as the archive action: one vocabulary for "which record, at which path".
+  return validateSourceArchive(payload);
 }
 
 export function validatePassphrase(payload: unknown): string {

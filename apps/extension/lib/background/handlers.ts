@@ -48,6 +48,8 @@ import {
   type SyncReport,
 } from '../sync/engine';
 import { planCardDecision, type CardDecisionShards } from '../cards/decide';
+import { planSourceArchive } from '../sources/archive';
+import { planSourceDelete } from '../sources/delete';
 import { dueForReview, parseReviewFile } from '../local/insights';
 import { planConflictResolution } from '../sync/conflict';
 import { createRemoteShardStore } from '../sync/shard-store';
@@ -68,6 +70,8 @@ import {
   validateConflictResolve,
   validateSearchQuery,
   validateSecuritySettings,
+  validateSourceArchive,
+  validateSourceDelete,
   validateSyncPolicy,
   validateSyncRequest,
   LIMITS,
@@ -926,6 +930,68 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
         }
       }
       return ok({ cards });
+    },
+
+    /*
+     * Deleting a note FOR GOOD. Separate from the archive action on purpose: this one cannot be undone,
+     * so it is asked for explicitly (the popup arms the button first) and never happens as a side effect.
+     */
+    'source.delete': async (request) => {
+      const { id, path } = validateSourceDelete(request.payload);
+      const store = await resolveStore(context);
+      const settings = await context.settings.load();
+      const index = await store.readIndex();
+      const item = index.items[id];
+      if (!item) throw new NotFoundError('note: that note is not in the index');
+      if (item.path !== path) {
+        throw new ConflictError('note: the index records ' + item.path + ', the request said ' + path);
+      }
+      const record = await store.readRecord(path);
+      if (record.kind !== 'source') throw new MessageError('note: the target record is not a note');
+
+      const prefix = settings.github.pathPrefix || null;
+      const plan = await planSourceDelete(
+        { record, path, index },
+        { shards: cardShards(store, prefix), prefix },
+      );
+      await store.commitFiles(plan.files, plan.message, plan.deleted);
+      try {
+        await createSyncCache(context).forget(path);
+      } catch {
+        // The cache is disposable: a delete that landed must not be reported as failed.
+      }
+      return ok({ deleted: path });
+    },
+
+    'source.archive': async (request) => {
+      const { id, path } = validateSourceArchive(request.payload);
+      const store = await resolveStore(context);
+      const settings = await context.settings.load();
+      const index = await store.readIndex();
+      const item = index.items[id];
+      if (!item) throw new NotFoundError('note: that note is not in the index');
+      // Same rule as the card decision: a disagreement between the index and the request is surfaced,
+      // never resolved by guessing.
+      if (item.path !== path) {
+        throw new ConflictError('note: the index records ' + item.path + ', the request said ' + path);
+      }
+      const record = await store.readRecord(path);
+      if (record.kind !== 'source') throw new MessageError('note: the target record is not a note');
+
+      const prefix = settings.github.pathPrefix || null;
+      const encoded = await store.contentCodec.encodeRecord(record, prefix);
+      const plan = await planSourceArchive(
+        { record, path, content: encoded.content, index },
+        { shards: cardShards(store, prefix), prefix, ...(context.now ? { now: context.now } : {}) },
+      );
+      await store.commitFiles(plan.files, plan.message);
+      // After the commit, so a failed write cannot evict a cache entry for a note that is still there.
+      try {
+        await createSyncCache(context).forget(path);
+      } catch {
+        // The cache is disposable and rebuildable; an archive that landed must not be reported as failed.
+      }
+      return ok({ archivedPath: plan.archivedPath, previousPath: path });
     },
 
     'card.decide': async (request) => {

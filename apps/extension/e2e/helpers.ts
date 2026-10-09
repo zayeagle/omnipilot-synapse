@@ -249,7 +249,17 @@ export interface GitHubStub {
  */
 export async function stubGitHub(
   context: BrowserContext,
-  options: { private?: boolean; withAi?: boolean } = {},
+  options: {
+    private?: boolean;
+    withAi?: boolean;
+    /**
+     * Hold every GitHub answer open for this long (ms).
+     *
+     * A spec that asserts on the popup's in-flight state needs the state to last longer than one
+     * round trip, which on a local stub is otherwise a race it cannot win.
+     */
+    delayMs?: number;
+  } = {},
 ): Promise<GitHubStub> {
   const calls: RecordedCall[] = [];
   const blobBySha = new Map<string, string>();
@@ -268,6 +278,10 @@ export async function stubGitHub(
       body = undefined;
     }
     calls.push({ method, url, body });
+
+    if (options.delayMs !== undefined && options.delayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, options.delayMs));
+    }
 
     const json = (data: unknown, status = 200) =>
       route.fulfill({ status, contentType: 'application/json', body: JSON.stringify(data) });

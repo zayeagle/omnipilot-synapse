@@ -24,6 +24,7 @@
  * ever lives in one of them.
  */
 
+import { mapWithConcurrency } from '../concurrency';
 import { type CkfRecord } from '../core/ckf';
 import { cardPath, sourceItemPath, topicPath } from '../core/paths';
 import { type RepoFile } from '../store/types';
@@ -47,7 +48,24 @@ import {
   type SearchHit,
   type SearchResponse,
 } from './query';
-import { compareText, shardKey } from './tokenize';
+import { compareText, isShardKey, shardKey } from './tokenize';
+
+/**
+ * How many shard reads may be in flight at once.
+ *
+ * A page's vocabulary spans hundreds of shards, and one serial read per shard is what made a capture
+ * that is meant to be two steps take as long as a full index rebuild. Eight takes the win without
+ * turning one capture into a burst a host would rate-limit.
+ */
+const SHARD_READ_CONCURRENCY = 8;
+
+/**
+ * What a directory listing can carry before it may be truncated.
+ *
+ * {@link SearchStore.listShards} is used as evidence that a shard does not exist, and a listing that
+ * came back at its own ceiling is not evidence: at that size every candidate is read instead.
+ */
+const DIRECTORY_LISTING_CEILING = 1000;
 
 /**
  * The narrow slice of the repository the index needs.
@@ -174,9 +192,12 @@ export class SearchIndex {
     const keys = new Set<string>(nextGroups.keys());
     if (prev !== null) for (const key of this.keysOf(prev)) keys.add(key);
 
+    const ordered = [...keys].sort(compareText);
+    const existing = await this.readShards(ordered);
+
     const files: RepoFile[] = [];
-    for (const key of [...keys].sort(compareText)) {
-      const text = await this.store.readShard(key);
+    for (const key of ordered) {
+      const text = existing.get(key) ?? null;
       const parsed = parseShard(text);
       // A corrupt shard is repaired by this write instead of being silently skipped.
       const corrupt = parsed === null && typeof text === 'string' && text.trim() !== '';
@@ -189,6 +210,39 @@ export class SearchIndex {
       }
     }
     return files;
+  }
+
+  /**
+   * Read the shards a write may touch — and only the ones that exist.
+   *
+   * A term only ever lives in one shard, so a page's vocabulary asks about every bucket it could touch,
+   * and some of them have no shard yet. Reading each of those misses one at a time is what made a capture
+   * wait on serial round trips; the listing costs one round trip and turns every miss into local work,
+   * after which the reads that remain run concurrently.
+   *
+   * Best-effort by construction: a store that cannot list falls back to reading every key (the previous
+   * behaviour), and a read that fails still surfaces to the caller's own error handling.
+   */
+  private async readShards(keys: readonly string[]): Promise<Map<string, string | null>> {
+    const out = new Map<string, string | null>();
+    for (const key of keys) out.set(key, null);
+    if (keys.length === 0) return out;
+
+    let wanted: readonly string[] = keys;
+    try {
+      const listed = await this.store.listShards();
+      if (listed.length < DIRECTORY_LISTING_CEILING) {
+        const present = new Set(listed);
+        wanted = keys.filter((key) => present.has(key));
+      }
+    } catch {
+      // The listing is an optimisation: a store that cannot answer it is read key by key.
+    }
+
+    await mapWithConcurrency(wanted, SHARD_READ_CONCURRENCY, async (key) => {
+      out.set(key, await this.store.readShard(key));
+    });
+    return out;
   }
 
   /**
@@ -335,7 +389,12 @@ export class SearchIndex {
     }
 
     const shards: RawShard[] = [];
+    // A shard under a key this version does not write was committed by the prefix scheme. Its bytes are
+    // valid, so nothing below would notice — but the postings a query needs now live in buckets, so
+    // answering from it would silently drop results. Rebuild is the fix, and the UI already offers it.
+    let stale = false;
     for (const key of keys) {
+      if (!isShardKey(key)) stale = true;
       let content: string | null = null;
       try {
         content = await this.store.readShard(key);
@@ -345,10 +404,11 @@ export class SearchIndex {
       shards.push({ key, text: content });
     }
 
-    return search(shards, text, {
+    const response = search(shards, text, {
       docs: await this.documents(),
       now: this.now,
       limit: options.limit ?? DEFAULT_LIMIT,
     });
+    return stale ? Object.assign(response, { needsRebuild: true }) : response;
   }
 }

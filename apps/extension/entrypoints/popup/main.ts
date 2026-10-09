@@ -49,6 +49,7 @@ import {
   type InboxRow,
   type SearchResultRow,
 } from '../../lib/ui/format';
+import { noticeFor, type NoticeState } from '../../lib/ui/notice';
 import { canReadRepository, errorGuidance } from '../../lib/status';
 import {
   cardPatchFor,
@@ -194,16 +195,19 @@ function main(): void {
   switchRow.append(switchLabel, el('span', 'spacer'), refreshButton);
 
   /* clip actions */
-  const clipPageButton = button(t('popup.clipPage', null, LANG), 'primary');
+  const clipPageButton = button(t('popup.clipPage', null, LANG));
   const clipSelectionButton = button(t('popup.clipSelection', null, LANG));
   const actions = el('div', 'row');
   /*
-   * 写笔记: the protocol has carried mode note from the start with no surface that could send it, so
+   * 记笔记: the protocol has carried mode note from the start with no surface that could send it, so
    * the only way in was a web page. The panel stays collapsed until asked for: a capture surface that
    * pushes a form at the user would break the zero-pressure rule.
    */
+  // Emphasis follows the MODE, not a fixed default: the row is a small segmented control, and the blue
+  // belongs to whichever action the console is currently in (see `setActionMode`). Painting 记笔记 blue
+  // for good made it look chosen while nothing was open, and made the other two look unavailable.
   const noteButton = button(t('popup.writeNote', null, LANG));
-  actions.append(clipPageButton, clipSelectionButton, noteButton);
+  actions.append(noteButton, clipPageButton, clipSelectionButton);
 
   const notePanel = el('section', 'compose');
   const noteTitleInput = el('input', 'control');
@@ -280,10 +284,18 @@ function main(): void {
     searchList,
   );
 
+  /* search: a pane of its own now, not a permanent block above the lists */
+  const searchPane = el('section');
+  searchPane.append(searchSection);
+
   /* inbox */
   const inboxSection = el('section');
   const inboxList = el('ul', 'inbox');
   inboxSection.append(el('h2', undefined, t('popup.inbox', null, LANG)), inboxList);
+
+  /* sync: the outcome and the one button that acts on it, behind a tab */
+  const syncPane = el('section');
+  syncPane.append(syncRow);
 
   /* 待处理 — the AI's proposals. Loaded from `cards.list` on open and after a decision, never on its own. */
   const pendingSection = el('section');
@@ -325,13 +337,27 @@ function main(): void {
     tab.setAttribute('aria-selected', 'false');
     tab.addEventListener('click', () => selectListTab(id));
     listTabBar.appendChild(tab);
+    listTabButtons.set(id, tab);
     listPanes.push({ id, button: tab, nodes });
   }
 
+  const listTabButtons = new Map<string, HTMLButtonElement>();
   addListTab('inbox', 'popup.inbox', [inboxSection]);
   addListTab('pending', 'popup.pending', [pendingSection]);
   addListTab('review', 'popup.tab.review', [dueSection]);
+  addListTab('search', 'popup.tab.search', [searchPane]);
+  addListTab('sync', 'popup.tab.sync', [syncPane]);
   selectListTab('inbox');
+
+  /** Disable a tab whose data cannot be read right now (the reason is in the notice above). */
+  function setTabAvailable(id: string, available: boolean): void {
+    const tab = listTabButtons.get(id);
+    if (tab) tab.disabled = !available;
+  }
+
+  /** Everything the tabs switch between; hidden as a whole while nothing can be read. */
+  const listPanesRoot = el('div', 'panes');
+  listPanesRoot.append(inboxSection, pendingSection, dueSection, searchPane, syncPane);
 
   /*
    * 浮动窗口: a toolbar popup cannot be dragged — it is anchored to the toolbar button and closes the
@@ -363,12 +389,8 @@ function main(): void {
     notice,
     blockedHint,
     statusDetails,
-    syncRow,
-    searchSection,
     listTabBar,
-    inboxSection,
-    pendingSection,
-    dueSection,
+    listPanesRoot,
     toastRoot,
   );
 
@@ -385,9 +407,45 @@ function main(): void {
   /** The public preferences from the last `status.get`, for the search result URLs. */
   let lastPrefs = normalizeStatusPayload(null).prefs;
 
+  /** Which action the console is currently in. `none` at rest: nothing is being done yet. */
+  type ActionMode = 'none' | 'note' | 'page' | 'selection';
+  let actionMode: ActionMode = 'none';
+
+  /**
+   * The action row is a segmented control: exactly one entry carries the emphasis, and the area below
+   * follows it.
+   *
+   * `note` swaps in the composer, which is that action's own surface. The two clip modes keep the status
+   * line and the lists: a clip has no form to show, and its progress and outcome already appear there
+   * ("处理中…" while it runs, then the toast and the Inbox row). The point of the emphasis is that the
+   * console answers "what am I doing" in one place instead of decorating a default.
+   */
+  function setActionMode(next: ActionMode): void {
+    actionMode = next;
+    noteButton.className = next === 'note' ? 'primary' : '';
+    clipPageButton.className = next === 'page' ? 'primary' : '';
+    clipSelectionButton.className = next === 'selection' ? 'primary' : '';
+    notePanel.hidden = next !== 'note';
+  }
+
+  /**
+   * The readiness line as `renderStatus` last left it. `setBusy` overlays the in-flight state on top
+   * of this and hands it back untouched, so a blocked reason is never lost behind a spinner.
+   */
+  let readinessNotice: NoticeState = { text: '', kind: 'blocked' };
+
+  /** Paint the status line from the readiness line plus the in-flight state. */
+  function paintNotice(): void {
+    const shown = noticeFor(readinessNotice, busy, t('popup.working', null, LANG));
+    notice.textContent = shown.text;
+    notice.dataset['kind'] = shown.kind;
+  }
+
   function setBusy(next: boolean): void {
     busy = next;
-    clipPageButton.textContent = next ? t('popup.working', null, LANG) : t('popup.clipPage', null, LANG);
+    // The in-flight state belongs to the status line, never to a button caption: a button that renames
+    // itself reads as a different button, and the line below it keeps its stale "Ready to clip".
+    paintNotice();
     clipPageButton.disabled = next || !canClip;
     noteButton.disabled = next || !canClip;
     clipSelectionButton.disabled = next || !canClip;
@@ -425,16 +483,17 @@ function main(): void {
       value.textContent = '—';
       delete value.dataset['kind'];
     }
-    notice.textContent = t('popup.working', null, LANG);
-    notice.dataset['kind'] = 'blocked';
+    // A status read that failed is a failure, not progress: this used to say "Working…" and the
+    // popup then claimed to be busy for as long as it stayed unreadable.
+    readinessNotice = { text: t('popup.statusUnavailable', null, LANG), kind: 'blocked' };
+    paintNotice();
     canSync = false;
     syncOutcomeText.textContent = t('options.sync.outcome.never', null, LANG);
     syncOutcomeText.dataset['kind'] = 'unknown';
     syncCountsText.textContent = '';
     // Nothing can be read while the status call itself fails, so the sections go with it.
-    searchSection.hidden = true;
-    inboxSection.hidden = true;
-    pendingSection.hidden = true;
+    for (const id of ['inbox', 'pending', 'review', 'search']) setTabAvailable(id, false);
+    listPanesRoot.hidden = true;
     blockedHint.hidden = false;
     setBusy(busy);
   }
@@ -461,21 +520,22 @@ function main(): void {
     // A blocked surface must not stack dead ends: the Inbox, the proposals and the review queue all read
     // the repository, so they follow the state they depend on instead of each reporting its own failure.
     const readable = canReadRepository(status.prefs);
-    searchSection.hidden = !readable;
-    inboxSection.hidden = !readable;
-    pendingSection.hidden = !readable;
+    // The tabs stay visible so it is clear what is there, but nothing is switchable until it can be read,
+    // and the pane area goes away entirely - one line explains why, instead of four empty panes.
+    for (const id of ['inbox', 'pending', 'review', 'search']) setTabAvailable(id, readable);
+    listPanesRoot.hidden = !readable;
     blockedHint.hidden = readable;
     renderSyncPanel();
-    notice.dataset['kind'] = panel.canClip ? 'ok' : 'blocked';
-    if (panel.canClip) {
-      notice.textContent = panel.notice;
-    } else {
-      // `readinessLabel` and the notice are often the same sentence; only show it when it adds.
-      notice.textContent =
-        panel.readinessLabel === panel.notice
+    readinessNotice = {
+      text: panel.canClip
+        ? panel.notice
+        : // `readinessLabel` and the notice are often the same sentence; only show it when it adds.
+          panel.readinessLabel === panel.notice
           ? panel.notice
-          : `${panel.readinessLabel} — ${panel.notice}`;
-    }
+          : `${panel.readinessLabel} — ${panel.notice}`,
+      kind: panel.canClip ? 'ok' : 'blocked',
+    };
+    paintNotice();
     setBusy(busy);
   }
 
@@ -572,12 +632,40 @@ function main(): void {
 
     const distill = button(t('popup.distill', null, LANG), 'link');
     distill.addEventListener('click', () => void distillRow(row, distill));
+    // A note has no page to open, so the button is not offered at all - a dead button invites a click
+    // and then explains nothing. A note written next to a page keeps that page's URL and the button.
     const open = button(t('popup.openItem', null, LANG), 'link');
-    open.disabled = row.url.length === 0;
+    open.hidden = !isSafeExternalUrl(row.url);
     open.addEventListener('click', () => void openExternal(row.url));
 
+    // 删除 is what the user asks for; what it does is archive (the repository cannot delete, by design),
+    // and the toast says so rather than leaving them to wonder whether the note is gone for good.
+    const archive = button(t('popup.archiveNote', null, LANG), 'link');
+    archive.addEventListener('click', () => void archiveRow(row, archive));
+    /*
+     * Deleting is irreversible, so the button arms before it acts: the first click asks, the second one
+     * within a few seconds does it. A modal would be worse in a 400px popup, and a single click on a
+     * permanent action is exactly the accident this avoids.
+     */
+    const remove = button(t('popup.deleteNote', null, LANG), 'link');
+    let armed = false;
+    let disarm: ReturnType<typeof setTimeout> | null = null;
+    remove.addEventListener('click', () => {
+      if (!armed) {
+        armed = true;
+        remove.textContent = t('popup.deleteConfirm', null, LANG);
+        disarm = setTimeout(() => {
+          armed = false;
+          remove.textContent = t('popup.deleteNote', null, LANG);
+        }, 5_000);
+        return;
+      }
+      if (disarm !== null) clearTimeout(disarm);
+      void deleteRow(row, remove);
+    });
+
     const rowActions = el('div', 'inbox-actions');
-    rowActions.append(distill, open);
+    rowActions.append(distill, open, archive, remove);
     item.append(title, meta, rowActions);
     return item;
   }
@@ -838,6 +926,7 @@ function main(): void {
   async function clipPage(): Promise<void> {
     if (busy || !canClip) return;
     setBusy(true);
+    setActionMode('page');
     const response = await send<CaptureResultData>({ type: 'capture.page', payload: {} });
     reportCapture(response);
     await refreshInbox();
@@ -873,6 +962,9 @@ function main(): void {
         toast.show(t('popup.needSelection', null, LANG), 'info');
         return;
       }
+      // The guards have all passed, so this really is the action being taken: select it before the
+      // request, not before the guards, or an unusable page would light the button up anyway.
+      setActionMode('selection');
       const response = await send<CaptureResultData>({ type: 'capture.request', payload });
       reportCapture(response);
       await refreshInbox();
@@ -885,7 +977,7 @@ function main(): void {
   }
 
   function setNoteOpen(open: boolean): void {
-    notePanel.hidden = !open;
+    setActionMode(open ? 'note' : 'none');
     if (open) noteTitleInput.focus();
   }
 
@@ -921,6 +1013,44 @@ function main(): void {
   noteCancelButton.addEventListener('click', () => setNoteOpen(false));
   noteSaveButton.addEventListener('click', () => void saveNote());
 
+  /** Archive (never delete) a note: it leaves the Inbox, and the body stays recoverable under archive/. */
+  async function archiveRow(row: InboxRow, trigger: HTMLButtonElement): Promise<void> {
+    if (busy) return;
+    trigger.disabled = true;
+    setBusy(true);
+    try {
+      const response = await send<unknown>({ type: 'source.archive', payload: { id: row.id, path: row.path } });
+      if (!response.ok) {
+        showError(response.code);
+        return;
+      }
+      toast.show(t('popup.noteArchived', null, LANG), 'success');
+      await refreshInbox();
+    } finally {
+      trigger.disabled = false;
+      setBusy(false);
+    }
+  }
+
+  /** Delete a note for good: gone from the repository, not archived. The popup asks first. */
+  async function deleteRow(row: InboxRow, trigger: HTMLButtonElement): Promise<void> {
+    if (busy) return;
+    trigger.disabled = true;
+    setBusy(true);
+    try {
+      const response = await send<unknown>({ type: 'source.delete', payload: { id: row.id, path: row.path } });
+      if (!response.ok) {
+        showError(response.code);
+        return;
+      }
+      toast.show(t('popup.noteDeleted', null, LANG), 'success');
+      await refreshInbox();
+    } finally {
+      trigger.disabled = false;
+      setBusy(false);
+    }
+  }
+
   async function distillRow(row: InboxRow, trigger: HTMLButtonElement): Promise<void> {
     const payload: DistillRequestPayload | null = distillPayloadFor(row.id, row.path);
     if (!payload) {
@@ -928,31 +1058,36 @@ function main(): void {
       return;
     }
     trigger.disabled = true;
-    trigger.textContent = t('popup.working', null, LANG);
-    const response = await send<DistillResultData>({ type: 'distill.request', payload });
-    trigger.disabled = false;
-    trigger.textContent = t('popup.distill', null, LANG);
-    if (!response.ok) {
-      showError(response.code);
-      return;
+    setBusy(true);
+    try {
+      const response = await send<DistillResultData>({ type: 'distill.request', payload });
+      if (!response.ok) {
+        showError(response.code);
+        return;
+      }
+      toastWithCommit(t('popup.distillDone', null, LANG), 'success', response.data?.commitUrl);
+    } finally {
+      trigger.disabled = false;
+      setBusy(false);
     }
-    toastWithCommit(t('popup.distillDone', null, LANG), 'success', response.data?.commitUrl);
   }
 
   async function syncNow(): Promise<void> {
     if (busy || !canSync) return;
-    syncNowButton.disabled = true;
-    syncNowButton.textContent = t('popup.working', null, LANG);
-    const response = await send<unknown>({ type: 'sync.now', payload: { reason: 'manual' } });
-    syncNowButton.textContent = t('popup.syncNow', null, LANG);
-    if (!response.ok) {
-      showError(response.code);
+    setBusy(true);
+    try {
+      const response = await send<unknown>({ type: 'sync.now', payload: { reason: 'manual' } });
+      if (!response.ok) {
+        showError(response.code);
+        await refresh();
+        return;
+      }
+      const result = normalizeSyncResult(response.data);
+      toast.show(t(`options.sync.outcome.${result.outcome}`, null, LANG), 'success');
       await refresh();
-      return;
+    } finally {
+      setBusy(false);
     }
-    const result = normalizeSyncResult(response.data);
-    toast.show(t(`options.sync.outcome.${result.outcome}`, null, LANG), 'success');
-    await refresh();
   }
 
   async function search(): Promise<void> {

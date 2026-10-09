@@ -12,13 +12,35 @@
  * down.
  */
 
-import { tokenize } from '../core/dedup';
+import { stableHash32, tokenize } from '../core/dedup';
 
 /** CJK scripts whose writing system has no inter-word spaces, so word tokens must be built here. */
 const CJK_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
 
-/** Shard keys are the first two code points of a term: `search/间隔.json`, `search/al.json`. */
-export const SHARD_KEY_LENGTH = 2;
+/**
+ * How many buckets the vocabulary is split across.
+ *
+ * A shard key used to be a term's first two code points, which makes the number of shards a function of
+ * the *vocabulary*: Latin gives a few hundred, and CJK gives thousands, because
+ * {@link tokenizeForSearch} emits both the single characters and the adjacent bigrams. One 681-character
+ * page touched 900 shards, so its commit — the record, the manifest and every shard it touched — blew
+ * past `MAX_COMMIT_FILES` and was refused outright, and anything long enough to fit still waited on
+ * hundreds of uploads.
+ *
+ * A bucket count replaces "one shard per prefix" with "one shard per bucket": one capture rewrites at
+ * most this many files plus two, whatever the page is written in. It trades per-file size against
+ * per-capture requests — 256 keeps a shard in the same range the prefix scheme already produced for
+ * Latin, while capping a capture's commit at 258 files.
+ *
+ * Changing this number renames every shard, so it needs `search.rebuild` (the options page has the
+ * button); {@link isShardKey} is what tells a stale shard from a live one in the meantime.
+ */
+export const SHARD_BUCKETS = 256;
+
+/** A bucket key lives in its own space — `b` + the bucket index in hex — so it can never be mistaken for
+ * one of the two-character prefix keys this scheme replaced. */
+const BUCKET_PREFIX = 'b';
+const BUCKET_WIDTH = (SHARD_BUCKETS - 1).toString(16).length;
 
 /**
  * Shard key for a term that has no code points at all (an empty or whitespace-only string).
@@ -64,21 +86,35 @@ export function tokenizeForSearch(text: string): string[] {
 }
 
 /**
- * Shard key of a term: its first {@link SHARD_KEY_LENGTH} code points.
+ * Shard key of a term: the bucket it hashes into, `b00`…`bff` for {@link SHARD_BUCKETS} = 256.
  *
- * `Array.from` iterates by code point, not by UTF-16 code unit, so a term that starts with a
- * surrogate pair (a rare CJK extension character, an emoji in a tag) yields one character rather
- * than half of one — a lone surrogate is not a legal file name on every platform.
+ * Folded first, so the key agrees with the term {@link tokenizeForSearch} emitted and two spellings of
+ * one term cannot land in different files. The hash covers the *whole* term rather than a prefix, which
+ * is what makes the number of shards independent of how large the vocabulary grows.
  *
- * Fallback for a 1-character term: the character itself (`search/间.json`). That is still a valid,
- * stable, collision-free key — the two-character rule is a *bucketing* choice, not a requirement
- * that the key be two characters long. A term with no code points at all falls back to
- * {@link EMPTY_TERM_SHARD_KEY}, which no real term can produce.
+ * A term with no characters keeps {@link EMPTY_TERM_SHARD_KEY} instead of a bucket: `tokenize()` never
+ * emits an underscore, so the sentinel can never collide with a bucket name.
  */
 export function shardKey(term: string): string {
-  const characters = Array.from(term.trim().toLowerCase());
-  if (characters.length === 0) return EMPTY_TERM_SHARD_KEY;
-  return characters.slice(0, SHARD_KEY_LENGTH).join('');
+  const folded = term.trim().toLowerCase();
+  if (folded.length === 0) return EMPTY_TERM_SHARD_KEY;
+  const bucket = stableHash32(folded) % SHARD_BUCKETS;
+  return BUCKET_PREFIX + bucket.toString(16).padStart(BUCKET_WIDTH, '0');
+}
+
+/**
+ * True when `key` is a bucket this version writes.
+ *
+ * The index lives in the repository, so a shard written by an older version is still sitting there after
+ * an update. Those keys are valid JSON under a valid path — nothing about them is corrupt — so without
+ * this check a stale index would answer queries with *silently* missing postings. Recognising the key
+ * space turns that into the visible, actionable "rebuild the index" state the UI already offers.
+ */
+export function isShardKey(key: string): boolean {
+  if (key === EMPTY_TERM_SHARD_KEY) return true;
+  if (key.length !== BUCKET_PREFIX.length + BUCKET_WIDTH) return false;
+  if (!key.startsWith(BUCKET_PREFIX)) return false;
+  return /^[0-9a-f]+$/u.test(key.slice(BUCKET_PREFIX.length));
 }
 
 /**

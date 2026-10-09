@@ -201,6 +201,15 @@ export default defineBackground(() => {
     } catch (error) {
       console.warn(`[synapse] remembered unlock not restored :: ${String(error)}`);
     }
+    // An install that was already unlocked when the policy arrived has nothing remembered yet; adopting
+    // the live session once means it stops asking from here on. Cheap and idempotent.
+    if (session.isUnlocked()) {
+      try {
+        await settings.rememberCurrentKey();
+      } catch (error) {
+        console.warn(`[synapse] unlock not remembered :: ${String(error)}`);
+      }
+    }
     await settings.refreshPublicPrefs(settingsSnapshot);
   };
 

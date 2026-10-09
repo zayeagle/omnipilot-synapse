@@ -262,6 +262,7 @@ export const ERROR_GUIDANCE: Record<ErrorCode, ErrorGuidance> = {
   tierLocked: { titleKey: 'error.tierLocked', actionKey: 'guidance.tierLocked.action', target: 'storage' },
   needToken: { titleKey: 'error.needToken', actionKey: 'guidance.needToken.action', target: 'storage' },
   commitTooLarge: { titleKey: 'error.commitTooLarge', actionKey: 'guidance.commitTooLarge.action', target: 'retry' },
+  deleteUnsupported: { titleKey: 'error.deleteUnsupported', actionKey: 'guidance.deleteUnsupported.action', target: 'storage' },
   unknown: { titleKey: 'error.unknown', actionKey: 'guidance.unknown.action', target: 'retry' },
 };
 

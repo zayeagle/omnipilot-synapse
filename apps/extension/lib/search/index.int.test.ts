@@ -12,8 +12,14 @@ class MemoryShardStore implements SearchStore {
   readonly shards = new Map<string, string>();
   readonly writes: string[] = [];
   readonly removes: string[] = [];
+  /** Every `readShard` key in call order — the requests one write pays for. */
+  readonly reads: string[] = [];
   failList = false;
   failRead = false;
+  /** Holds a read open so overlapping reads are observable; 0 keeps every other test immediate. */
+  delayMs = 0;
+  peakInFlight = 0;
+  private inFlight = 0;
 
   async listShards(): Promise<readonly string[]> {
     if (this.failList) throw new Error('store unavailable');
@@ -21,8 +27,18 @@ class MemoryShardStore implements SearchStore {
   }
 
   async readShard(key: string): Promise<string | null> {
-    if (this.failRead) throw new Error('store unavailable');
-    return this.shards.get(key) ?? null;
+    this.reads.push(key);
+    this.inFlight += 1;
+    this.peakInFlight = Math.max(this.peakInFlight, this.inFlight);
+    try {
+      if (this.delayMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, this.delayMs));
+      }
+      if (this.failRead) throw new Error('store unavailable');
+      return this.shards.get(key) ?? null;
+    } finally {
+      this.inFlight -= 1;
+    }
   }
 
   async writeShard(key: string, content: string): Promise<void> {
@@ -70,7 +86,7 @@ describe('SearchIndex (F4 INT)', () => {
 
     expect(store.shards.size).toBeGreaterThan(1);
     for (const key of store.shards.keys()) {
-      expect(Array.from(key).length).toBeLessThanOrEqual(2);
+      expect(key).toMatch(/^b[0-9a-f]{2}$/u);
       expect(parseShard(store.shards.get(key) ?? null)).not.toBeNull();
     }
 
@@ -218,5 +234,95 @@ describe('SearchIndex (F4 INT)', () => {
     store.failList = false;
     store.shards.clear();
     expect((await index.query('spaced repetition')).needsRebuild).toBe(false);
+  });
+
+  it('TC-F4-I04 touches only the shards that exist, so a missing shard costs no request', async () => {
+    const store = new MemoryShardStore();
+    const index = new SearchIndex({ store, now: () => NOW });
+    const first = newSourceItem({
+      id: 'n1',
+      url: 'https://example.com/n1',
+      title: 'Zzqx zzqy',
+      body: 'Zzqx zzqy zzqz.',
+      capturedAt: new Date(NOW),
+    });
+
+    // A cold repository: every candidate key is absent, and absence must not cost a round trip.
+    expect(index.shardsFor(first).length).toBeGreaterThan(0);
+    await index.changedShards(first);
+    expect(store.reads).toEqual([]);
+    await index.upsert(first);
+
+    // A second record sharing that vocabulary reads exactly the shards that now exist.
+    store.reads.length = 0;
+    const second = newSourceItem({
+      id: 'n2',
+      url: 'https://example.com/n2',
+      title: 'Zzqx again',
+      body: 'Zzqx again, with a tail of other words.',
+      capturedAt: new Date(NOW),
+    });
+    const keys = index.shardsFor(second);
+    await index.changedShards(second);
+
+    const present = keys.filter((key) => store.shards.has(key));
+    expect(present.length).toBeGreaterThan(0);
+    expect(present.length).toBeLessThan(keys.length);
+    expect(new Set(store.reads)).toEqual(new Set(present));
+  });
+
+  it('TC-F4-I04 reads every key as before when the listing is unavailable', async () => {
+    const store = new MemoryShardStore();
+    const index = new SearchIndex({ store, now: () => NOW });
+    const record = newSourceItem({
+      id: 'n3',
+      url: 'https://example.com/n3',
+      title: 'No listing',
+      body: 'A note whose shards cannot be listed.',
+      capturedAt: new Date(NOW),
+    });
+    const keys = index.shardsFor(record);
+
+    store.failList = true;
+    const files = await index.changedShards(record);
+
+    // The listing is an optimisation: without it the previous behaviour is the contract.
+    expect(new Set(store.reads)).toEqual(new Set(keys));
+    expect(files.map((file) => shardKeyFromPath(file.path)).sort()).toEqual(keys);
+  });
+
+  it('TC-F4-I05 overlaps the reads but never runs past the ceiling', async () => {
+    const store = new MemoryShardStore();
+    const index = new SearchIndex({ store, now: () => NOW });
+    // Twelve distinct two-character prefixes: more than one batch of reads.
+    const body = 'alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima';
+    const first = newSourceItem({
+      id: 'w1',
+      url: 'https://example.com/w1',
+      title: 'Wide vocabulary',
+      body,
+      capturedAt: new Date(NOW),
+    });
+
+    await index.upsert(first);
+    expect(index.shardsFor(first).length).toBeGreaterThan(8);
+
+    store.reads.length = 0;
+    store.peakInFlight = 0;
+    store.delayMs = 5;
+    const second = newSourceItem({
+      id: 'w2',
+      url: 'https://example.com/w2',
+      title: 'Wide vocabulary',
+      body,
+      capturedAt: new Date(NOW),
+    });
+    await index.changedShards(second);
+
+    expect(store.reads.length).toBeGreaterThan(8);
+    // Overlapped, so a page no longer waits for one round trip per shard...
+    expect(store.peakInFlight).toBeGreaterThan(1);
+    // ...but bounded, because the shard reads are the burst a capture is allowed to make.
+    expect(store.peakInFlight).toBeLessThanOrEqual(8);
   });
 });

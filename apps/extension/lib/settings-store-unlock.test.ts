@@ -5,14 +5,13 @@ import { MemoryStorageArea, STORAGE_KEYS, SettingsStore } from './settings-store
 /**
  * The unlock policy is a security setting, so its defaults matter more than its features.
  *
- * Two facts are pinned here: an install that never answered the question is STRICT (no key is ever
- * remembered on the user's behalf), and leaving remember mode drops the key rather than keeping a way
- * back in.
+ * Pinned here: an install that never answered the question is REMEMBER (the owner's default, disclosed
+ * on the Security page), an explicit choice always wins, and leaving remember mode drops the key rather
+ * than keeping a way back in.
  */
 describe('unlock policy (R8 UNIT)', () => {
   it('TC-R8-U04 defaults to remember, and keeps the policy next to the key it authorizes', async () => {
     const store = new SettingsStore({ area: new MemoryStorageArea(), now: () => 0, iterations: 1 });
-    // Default: remember, so a fresh install does not ask for the passphrase after every restart.
     expect(await store.getUnlockPolicy()).toBe('remember');
 
     await store.setUnlockPolicy('strict');
@@ -34,5 +33,13 @@ describe('unlock policy (R8 UNIT)', () => {
     const stored = await area.get(STORAGE_KEYS.unlockPolicy);
     expect(stored[STORAGE_KEYS.unlockPolicy]).toEqual({ policy: 'strict' });
     expect(await store.restoreRememberedKey()).toBe(false);
+  });
+
+  it('TC-R8-U06 remembering the live session is a no-op without one, and never throws', async () => {
+    const store = new SettingsStore({ area: new MemoryStorageArea(), now: () => 0, iterations: 1 });
+    await store.setUnlockPolicy('remember');
+    // No session: nothing to remember, and asking must not be an error the caller has to handle. This is
+    // the gap an install unlocked before the policy existed would otherwise sit in forever.
+    await expect(store.rememberCurrentKey()).resolves.toBeUndefined();
   });
 });

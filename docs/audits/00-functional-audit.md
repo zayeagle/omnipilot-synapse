@@ -39,6 +39,8 @@
 | 26 | `store.probe`（与 #7 同源，计一次） | — | — | — | — | — |
 
 **计划新增（本次实现，8 项，已实现 4）**：`cards.list` · `card.decide` · `conflict.resolve` · `review.due` · `link.suggest` · `link.decide` · `note.export` · `note.mark`。
+- `source.archive` — 归档一条笔记（正文移到 `archive/sources/`，原路径留墓碑；不物理删除）。`lib/sources/archive.ts` · `lib/background/handlers.ts`
+- `source.delete` — **真删除**一条笔记（树项 `sha: null` 移除文件 + 同一提交里更新索引/分片；不可恢复，界面需二次确认）。`lib/sources/delete.ts` · `lib/store/github-api.ts` · `lib/background/handlers.ts`
 
 ## 2. 枚举基线 B：CKF 四类记录（数据面）
 
@@ -158,4 +160,3 @@
 - **顺带修掉的一个真缺陷（第 13 轮）**：`PublicPrefs.sync` 从未被任何调用方填充，界面因此**永远显示「从未同步」**——比「缺一个字段」更严重的一类问题：**界面在不该确定的地方斩钉截铁**。
 
 **结论更新**：审计 §4 的 P0 两条（N1/N2）已闭合；P1 的 S1 原因侧已闭合、动作侧待做；**S3（E4/E5 记忆）机制已落地、接线待做**；U1（`Topic`）仍未被创建——它是 G9 的目标，也是这份审计里最后一条真正的「数据模型里有、工作流里没有」。
-

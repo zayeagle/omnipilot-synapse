@@ -51,8 +51,8 @@ export class NotConfiguredError extends StoreError {
  * One commit would carry more files than the guard allows.
  *
  * Its own code on purpose: this used to surface as notConfigured, so a fully configured store reported
- * that storage was not configured whenever a Chinese page's search shards (keyed by a term's first two
- * characters) outnumbered the cap. That sent everyone looking at the wrong setting.
+ * that storage was not configured whenever one page's search shards outnumbered the cap. That sent
+ * everyone looking at the wrong setting.
  */
 export class CommitTooLargeError extends StoreError {
   constructor(public readonly fileCount: number, limit: number) {

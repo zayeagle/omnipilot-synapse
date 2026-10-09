@@ -446,6 +446,21 @@ export class SettingsStore {
     return typeof key === 'string' && key.length > 0 ? key : null;
   }
 
+  /**
+   * Remember the key of the session that is ALREADY open.
+   *
+   * `rememberKey` runs on unlock and on setup, so an install that was unlocked before the policy existed
+   * has nothing stored and would keep asking until the next manual unlock. This closes that gap once.
+   */
+  async rememberCurrentKey(): Promise<void> {
+    if (!this.session) return;
+    try {
+      await this.rememberKey(this.session.requireKey(this.now()));
+    } catch {
+      // Locked, or the key cannot be exported: nothing to remember, and nothing to report.
+    }
+  }
+
   /** Drop the remembered key. An explicit lock, or leaving remember mode, must mean exactly that. */
   async forgetRememberedKey(): Promise<void> {
     const policy = await this.getUnlockPolicy();

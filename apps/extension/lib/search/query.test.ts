@@ -22,6 +22,7 @@ import {
   type RawShard,
   type SearchOptions,
 } from './query';
+import { shardKey } from './tokenize';
 
 const NOW = Date.parse('2026-03-01T00:00:00.000Z');
 const DAY = 24 * 60 * 60 * 1000;
@@ -223,9 +224,10 @@ describe('search (F4 UNIT)', () => {
     ];
     const shards = shardsOf(documents);
 
-    // The bigram is a term of its own, living in a shard of its own…
-    expect(shards.map((shard) => shard.key)).toContain('间隔');
-    const bigramShard = parseShard(shards.find((shard) => shard.key === '间隔')?.text ?? null);
+    // The bigram is a term of its own, living in a shard of its own — and the shard is its bucket.
+    const bigramKey = shardKey('间隔');
+    expect(shards.map((shard) => shard.key)).toContain(bigramKey);
+    const bigramShard = parseShard(shards.find((shard) => shard.key === bigramKey)?.text ?? null);
     expect(queryShard(bigramShard ?? emptyShard(), '间隔').map((posting) => posting.id)).toEqual([
       'repeat',
     ]);

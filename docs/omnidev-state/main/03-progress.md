@@ -51,3 +51,37 @@
   no title must be titled after its first line.
 - Changes are NOT committed: repository rule, and the owner has not asked. The tree carries F11 plus the
   earlier unlock-policy/trust work and the regenerated state docs.
+
+## Post-completion feedback (owner, 2026-10-08)
+
+- Action order in the popup: **写笔记 first (default), then 剪藏本页, then 剪藏选区**. The emphasis moved with
+  it (写笔记 is the primary button) so the row does not read backwards; the compose panel still starts
+  COLLAPSED, because opening the popup must not push a form at the user (零压力).
+- Verified: tsc 0, UNIT 621, build 0 (425.9 kB), `assert:content` OK.
+
+## Post-completion feedback 2 (owner, 2026-10-08) - 真删除 (F12)
+
+笔记现在有两个动作，后果不同：
+
+- **归档**：正文移到 archive/sources/，原路径留墓碑，索引与分片不再引用 —— 可恢复。`source.archive` + lib/sources/archive.ts。
+- **删除**：在同一次提交里把文件从仓库**移除**，并从索引与分片中摘掉 —— **不可恢复**。`source.delete` + lib/sources/delete.ts；popup 的按钮**先武装再执行**（第一次点击是询问，5 秒内第二次才真删），因为一次点击就永久生效正是要避免的误操作。
+
+存储能力：REST 侧把删除作为 Git Data API 的树项 `sha: null` 传递（lib/store/github-api.ts）；删除与普通文件分开列出，因为删除没有 blob 要先创建。SSH 伴生进程只能新增/覆盖，因此它以自己的错误码回答（`deleteUnsupported`：「切到 Token 模式，或改用归档」）—— 报告限制，而不是提交一次并未发生的删除。已记入 02-plan.md 的 Open backlog。
+
+测试：TC-F12-I01（归档）、TC-F12-I02（真删除不留任何痕迹：无墓碑、无 archive 副本、不再列出）、TC-F12-I03（索引与请求不一致时以 conflict 拒绝且不删任何东西）。测试桩被教会理解 `sha: null` —— 否则每条删除用例都会在一个**仍然持有该文件**的仓库上通过。
+
+验证：tsc 0 · UNIT 621 · INT 124 · build 0 · assert:content OK。基线 INT 121 -> 124。
+
+## Post-completion feedback 3 (owner, 2026-10-08) - 提炼报锁定 / 打开不可点 / 面板精简
+
+1. **提炼报「保险库已锁定」且只有解锁一次才好** —— 根因是我上一版的一个**覆盖漏洞**：派生密钥只在
+   `unlock()` 与 `setupVault()` 里被记住，而**在解锁策略存在之前就已解锁**的安装从未存过密钥，于是每次
+   重启都回到「要口令」。修：`SettingsStore.rememberCurrentKey()` + `background.refresh()` 在会话已解锁
+   且未存过时**补记一次**。这条正是「默认本机记住」本该覆盖、却被我漏掉的那一半。
+2. **笔记的「打开」按钮不可点**：笔记没有可打开的页面。现在按 `isSafeExternalUrl` 判断，**没有可打开的
+   http(s) 地址就不显示这个按钮**（贴着网页写的笔记仍保留该页面地址与按钮）；一个点了没反应的按钮比没
+   有按钮更糟。
+3. **检索与同步收进页签**：页签变为 收件箱 · 待处理 · 复习队列 · 检索 · 同步（可换行），下面只有一个面板
+   区（`.panes`）。不可读时**页签变灰 + 面板区整块隐藏**，只留一行原因 —— 而不是四个空面板。
+
+验证：tsc 0 · UNIT **622**（新增 TC-R8-U06：无会话时补记是空操作且不抛）· INT 124 · build 0（433.5 kB）· `assert:content` OK。基线 UNIT 621 -> 622。

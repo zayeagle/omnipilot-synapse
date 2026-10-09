@@ -136,12 +136,18 @@ export class GitHubStore implements RepoStore {
    * Delegates to the REST client after guarding the file count. `async` on purpose: a rejected
    * promise is the contract here, so a caller's `try/catch` around `await` always sees it.
    */
-  async commitFiles(files: RepoFile[], message: string): Promise<CommitResult> {
-    if (files.length === 0) throw new NotConfiguredError('storage: refusing an empty commit');
+  async commitFiles(
+    files: RepoFile[],
+    message: string,
+    deleted: readonly string[] = [],
+  ): Promise<CommitResult> {
+    if (files.length === 0 && deleted.length === 0) {
+      throw new NotConfiguredError('storage: refusing an empty commit');
+    }
     if (files.length > MAX_COMMIT_FILES) {
       throw new CommitTooLargeError(files.length, MAX_COMMIT_FILES);
     }
-    return this.api.commitFiles(files, message);
+    return this.api.commitFiles(files, message, deleted);
   }
 
   /* ------------------------------ records ------------------------------ */

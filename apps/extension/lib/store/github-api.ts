@@ -12,6 +12,7 @@
  *   message derived from a transport failure is scrubbed first.
  */
 
+import { mapWithConcurrency } from '../concurrency';
 import { base64ToUtf8 } from '../security/base64';
 import { scrubError } from '../security/redact';
 import {
@@ -31,6 +32,18 @@ export const GITHUB_API_VERSION = '2022-11-28';
 export const DEFAULT_TIMEOUT_MS = 15_000;
 /** One backoff retry, not a retry loop: a 5xx that repeats is an outage, not a hiccup. */
 export const RETRY_BACKOFF_MS = 400;
+/**
+ * How many blobs of one commit may be created at once.
+ *
+ * A capture commits its record, the manifest and every shard its terms touch. Shards are bucketed, so
+ * that is at most 258 files for a page in any script — but a blob per file is still the only shape the
+ * Git Data API offers, and the capture is the latency-critical path. One at a time turned a full commit
+ * into a minute of round trips; twelve lands it in about two seconds.
+ *
+ * Not higher on purpose: the host asks for serial requests and its secondary limit is aimed at bursts,
+ * and 258 requests per capture already sits well inside the 5000-per-hour budget.
+ */
+const BLOB_UPLOAD_CONCURRENCY = 12;
 
 /** The injected transport. Structurally `fetch`, so `createGithubApi({ fetchImpl: fetch })` works. */
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
@@ -51,7 +64,7 @@ export interface GithubApi {
   probeRepo(): Promise<StoreProbe>;
   readFile(path: string): Promise<string | null>;
   listDir(path: string): Promise<DirEntry[]>;
-  commitFiles(files: RepoFile[], message: string): Promise<CommitResult>;
+  commitFiles(files: RepoFile[], message: string, deleted?: readonly string[]): Promise<CommitResult>;
 }
 
 interface HttpOutcome {
@@ -59,11 +72,12 @@ interface HttpOutcome {
   body: unknown;
 }
 
+/** `sha: null` is how the Git Data API removes a path: the entry is dropped from the new tree. */
 interface TreeEntry {
   path: string;
   mode: '100644';
   type: 'blob';
-  sha: string;
+  sha: string | null;
 }
 
 /**
@@ -232,7 +246,11 @@ export function createGithubApi(options: GithubApiOptions): GithubApi {
   }
 
   /** The Git Data API sequence that lands every file in exactly one commit (SC-F6-01). */
-  async function commitOnce(files: RepoFile[], message: string): Promise<CommitResult> {
+  async function commitOnce(
+    files: RepoFile[],
+    message: string,
+    deleted: readonly string[],
+  ): Promise<CommitResult> {
     const refUrl = repoUrl(`/git/ref/heads/${encodePath(branch)}`);
     let headSha: string;
     try {
@@ -247,18 +265,30 @@ export function createGithubApi(options: GithubApiOptions): GithubApi {
       asRecord(asRecord((await send('GET', commitUrl)).body)['tree'])['sha'],
     );
 
-    const tree: TreeEntry[] = [];
-    for (const file of files) {
-      const blob = await send('POST', repoUrl('/git/blobs'), {
-        content: file.content,
-        encoding: 'utf-8',
-      });
-      tree.push({
-        path: file.path,
-        mode: '100644',
-        type: 'blob',
-        sha: requireSha(asRecord(blob.body)['sha']),
-      });
+    // Blobs do not depend on each other, so they are created concurrently while the tree entries keep
+    // the caller's file order (the tree itself is order-insensitive, but a stable order keeps the
+    // request log readable and the tests honest).
+    const tree: TreeEntry[] = await mapWithConcurrency(
+      files,
+      BLOB_UPLOAD_CONCURRENCY,
+      async (file): Promise<TreeEntry> => {
+        const blob = await send('POST', repoUrl('/git/blobs'), {
+          content: file.content,
+          encoding: 'utf-8',
+        });
+        return {
+          path: file.path,
+          mode: '100644',
+          type: 'blob',
+          sha: requireSha(asRecord(blob.body)['sha']),
+        };
+      },
+    );
+
+    // Deletions ride the same tree: a `sha: null` entry removes the path from the new tree. They are
+    // listed separately from `files` because a deletion has no blob to create first.
+    for (const path of deleted) {
+      tree.push({ path, mode: '100644', type: 'blob', sha: null });
     }
 
     const treeResponse = await send('POST', repoUrl('/git/trees'), { base_tree: baseTreeSha, tree });
@@ -284,13 +314,23 @@ export function createGithubApi(options: GithubApiOptions): GithubApi {
       throw error;
     }
 
-    return { sha: commitSha, htmlUrl, paths: files.map((file) => file.path) };
+    return { sha: commitSha, htmlUrl, paths: [...files.map((file) => file.path), ...deleted] };
   }
 
-  async function commitFiles(files: RepoFile[], message: string): Promise<CommitResult> {
+  async function commitFiles(
+    files: RepoFile[],
+    message: string,
+    deleted: readonly string[] = [],
+  ): Promise<CommitResult> {
     assertConfigured();
-    if (!Array.isArray(files) || files.length === 0) {
-      throw validationError('storage: commitFiles requires at least one file');
+    if (!Array.isArray(files)) throw validationError('storage: commitFiles requires an array of files');
+    if (files.length === 0 && deleted.length === 0) {
+      throw validationError('storage: commitFiles requires at least one change');
+    }
+    for (const path of deleted) {
+      if (typeof path !== 'string' || path.length === 0 || path.startsWith('/') || path.includes('..')) {
+        throw validationError('storage: a deleted path must be a non-empty repository-relative path');
+      }
     }
     for (const file of files) {
       if (typeof file?.path !== 'string' || file.path.length === 0) {
@@ -302,14 +342,14 @@ export function createGithubApi(options: GithubApiOptions): GithubApi {
     }
 
     try {
-      return await commitOnce(files, message);
+      return await commitOnce(files, message, deleted);
     } catch (error) {
       if (!(error instanceof RefMovedError)) throw error;
     }
     // The branch moved under us: re-read the ref (the first step of the sequence) and rebuild the
     // commit on the new head — exactly once. Re-PATCHing the stale sha could never fast-forward.
     try {
-      return await commitOnce(files, message);
+      return await commitOnce(files, message, deleted);
     } catch (error) {
       if (error instanceof RefMovedError) throw error.conflict;
       throw error;

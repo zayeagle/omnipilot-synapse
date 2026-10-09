@@ -2,51 +2,75 @@ import { describe, expect, it } from 'vitest';
 
 import {
   EMPTY_TERM_SHARD_KEY,
-  SHARD_KEY_LENGTH,
+  SHARD_BUCKETS,
   compareText,
   isCjkToken,
+  isShardKey,
   shardKey,
   tokenizeForSearch,
 } from './tokenize';
 
 describe('shardKey (F4 UNIT)', () => {
-  it('TC-F4-U03 uses the first two characters of a latin term', () => {
-    expect(shardKey('alpha')).toBe('al');
-    expect(shardKey('retrieval')).toBe('re');
-    expect(SHARD_KEY_LENGTH).toBe(2);
+  it('TC-F4-U03 buckets a term by its whole text, not by a prefix', () => {
+    // The key is no longer derived from the first characters, which is the whole point: a term's key
+    // stops growing with the vocabulary, and two terms sharing a prefix no longer share a file.
+    expect(shardKey('alpha')).toMatch(/^b[0-9a-f]{2}$/u);
+    expect(shardKey('间隔重复')).toMatch(/^b[0-9a-f]{2}$/u);
+    // The prefix scheme's keys are gone: these are not what a two-character prefix would produce.
+    expect(shardKey('间隔重复')).not.toBe('间隔');
+    expect(shardKey('alpha')).not.toBe('al');
   });
 
-  it('TC-F4-U03 splits a CJK term into its first two characters', () => {
-    expect(shardKey('间隔重复')).toBe('间隔');
-    expect(shardKey('重复')).toBe('重复');
+  it('TC-F4-U03 keeps every key inside the bucket space', () => {
+    for (const term of ['alpha', 'retrieval', '间隔重复', '重复', '间', 'a', '𠀀abcdef', '12345']) {
+      const key = shardKey(term);
+      expect(isShardKey(key)).toBe(true);
+      expect(key).toHaveLength(3);
+      const bucket = Number.parseInt(key.slice(1), 16);
+      expect(bucket).toBeGreaterThanOrEqual(0);
+      expect(bucket).toBeLessThan(SHARD_BUCKETS);
+    }
   });
 
-  it('TC-F4-U03 falls back to the single character for a 1-character term', () => {
-    // A 1-character term cannot fill two code points: the character itself is the key, and it still
-    // buckets every term that starts with it (`间` and `间隔` land in different files, by design).
-    expect(shardKey('间')).toBe('间');
-    expect(shardKey('a')).toBe('a');
-    expect(shardKey('间')).not.toBe(shardKey('间隔'));
+  it('TC-F4-U03 is stable: one term, one bucket, on every call', () => {
+    for (const term of ['alpha', '间隔重复', '𠀀abcdef']) {
+      expect(shardKey(term)).toBe(shardKey(term));
+      // Case and surrounding whitespace are folded before hashing, so neither can split a term across
+      // two files — the write path and the query path must derive the same key from the same word.
+      expect(shardKey('  ' + term.toUpperCase() + ' ')).toBe(shardKey(term));
+    }
+  });
+
+  it('TC-F4-U03 bounds the files one page can touch', () => {
+    // What the prefix scheme could not promise: however wide the vocabulary, the number of distinct
+    // shard keys stays inside the bucket count. This is the property the capture latency rests on.
+    const terms = tokenizeForSearch(
+      '间隔重复 spaced repetition 记忆 复习 遗忘 曲线 检索 索引 治理 观测 部署 权限'.repeat(6),
+    );
+    const keys = new Set(terms.map((term) => shardKey(term)));
+    expect(terms.length).toBeGreaterThan(20);
+    expect(keys.size).toBeLessThanOrEqual(SHARD_BUCKETS);
+    for (const key of keys) expect(isShardKey(key)).toBe(true);
   });
 
   it('TC-F4-U03 falls back to the sentinel when the term has no characters at all', () => {
     expect(shardKey('')).toBe(EMPTY_TERM_SHARD_KEY);
     expect(shardKey('   ')).toBe(EMPTY_TERM_SHARD_KEY);
-    // The sentinel can never collide with a real key: tokenize() emits no underscores.
+    // The sentinel can never collide with a bucket: tokenize() emits no underscores.
     expect(EMPTY_TERM_SHARD_KEY).toBe('_');
+    expect(isShardKey(EMPTY_TERM_SHARD_KEY)).toBe(true);
   });
 
-  it('TC-F4-U03 is unicode-safe for astral code points', () => {
-    // `slice(0, 2)` would return a single astral character here (it counts UTF-16 units); `Array.from`
-    // counts code points, so the key is two characters long either way.
-    const key = shardKey('𠀀abcdef');
-    expect(Array.from(key)).toHaveLength(2);
-    expect(key).toBe('𠀀a');
-  });
-
-  it('TC-F4-U03 trims and lowercases before bucketing', () => {
-    expect(shardKey('  Alpha ')).toBe('al');
-    expect(shardKey('INTERVAL')).toBe('in');
+  it('TC-F4-U03 recognises a shard from the old prefix scheme as stale', () => {
+    // Those files are valid JSON at valid paths, so nothing else would notice them — and a query
+    // answered from them would silently drop postings. The key space is what tells them apart.
+    expect(isShardKey('al')).toBe(false);
+    expect(isShardKey('间隔')).toBe(false);
+    expect(isShardKey('a')).toBe(false);
+    expect(isShardKey('b0')).toBe(false);
+    expect(isShardKey('bb')).toBe(false);
+    expect(isShardKey('b00')).toBe(true);
+    expect(isShardKey('bff')).toBe(true);
   });
 });
 

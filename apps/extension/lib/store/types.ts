@@ -57,5 +57,6 @@ export interface KnowledgeStore {
   readFile(path: string): Promise<string | null>;
   listDir(path: string): Promise<DirEntry[]>;
   /** One atomic commit for every file — a capture must never land half-written (SC-F6-01). */
-  commitFiles(files: RepoFile[], message: string): Promise<CommitResult>;
+  /** `deleted` carries paths to remove in the same commit; not every transport can do it. */
+  commitFiles(files: RepoFile[], message: string, deleted?: readonly string[]): Promise<CommitResult>;
 }

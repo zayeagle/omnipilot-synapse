@@ -232,8 +232,10 @@ describe('postings (F4 UNIT)', () => {
       expect(entries.length).toBeGreaterThan(0);
       for (const entry of entries) expect(shardKey(entry.term)).toBe(key);
     }
-    expect(grouped.get('间隔')?.map((entry) => entry.term)).toEqual(['间隔']);
-    expect(grouped.get('ai')?.map((entry) => entry.posting.field)).toEqual(['tag']);
+    // The key is the term's bucket, not its text: ask for it the way the write path does. `toContain`
+    // rather than an exact list, because two terms may share a bucket and that is not a failure.
+    expect(grouped.get(shardKey('间隔'))?.map((entry) => entry.term)).toContain('间隔');
+    expect(grouped.get(shardKey('ai'))?.map((entry) => entry.posting.field)).toContain('tag');
 
     // The whole-document form is the same postings, all in one shard.
     const whole = addRecord(emptyShard(), document);

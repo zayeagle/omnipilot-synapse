@@ -120,6 +120,7 @@ const ERROR_CODE_TABLE: Record<ErrorCode, true> = {
   tierLocked: true,
   needToken: true,
   commitTooLarge: true,
+  deleteUnsupported: true,
   unknown: true,
 };
 

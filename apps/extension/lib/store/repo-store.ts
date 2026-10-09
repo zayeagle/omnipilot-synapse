@@ -32,12 +32,14 @@ import type { CommitResult, DirEntry, KnowledgeStore, RepoFile, StoreProbe } fro
 /**
  * Upper bound on one commit, as a guard against a pathological fan-out — NOT a design target.
  *
- * A capture commits the record, the index AND every search shard its terms touch, and shards are keyed
- * by a term's first two characters. That is "a handful" for English and several HUNDRED for Chinese,
- * where nearly every two-character prefix is distinct: at 64 this refused perfectly ordinary captures
- * with `notConfigured`, which read as "storage is not configured" and sent everyone looking in the
- * wrong place. The Git Data API takes hundreds of tree entries; the cost of a big commit is time, and
- * time is the right thing to spend instead of the user's note.
+ * A capture commits the record, the manifest AND every search shard its terms touch. Shards are bucketed
+ * (`SHARD_BUCKETS` in `search/tokenize.ts`), so that is at most 258 files for a page in any script, and
+ * the guard is back to what a guard is for: a genuine fan-out defect rather than the normal case.
+ *
+ * It used to be a real limit. Shards were keyed by a term's first two characters, so the count tracked
+ * the vocabulary: "a handful" for English and hundreds for Chinese. A 681-character page touched 900
+ * files and was refused outright, and at 64 the refusal even surfaced as `notConfigured`, which read as
+ * "storage is not configured" and sent everyone looking at the wrong setting.
  */
 export const MAX_COMMIT_FILES = 512;
 
@@ -161,12 +163,16 @@ export function createRepoStore(
     return probed;
   };
 
-  const commitFiles = async (files: RepoFile[], message: string): Promise<CommitResult> => {
+  const commitFiles = async (
+    files: RepoFile[],
+    message: string,
+    deleted: readonly string[] = [],
+  ): Promise<CommitResult> => {
     if (files.length === 0) throw new NotConfiguredError('storage: refusing an empty commit');
     if (files.length > MAX_COMMIT_FILES) {
       throw new CommitTooLargeError(files.length, MAX_COMMIT_FILES);
     }
-    return knowledge.commitFiles(files, message);
+    return knowledge.commitFiles(files, message, deleted);
   };
 
   return {

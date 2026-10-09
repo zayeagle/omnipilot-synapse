@@ -26,6 +26,17 @@ function hex8(value: number): string {
   return (value >>> 0).toString(16).padStart(8, '0');
 }
 
+/**
+ * 32-bit FNV-1a over the input's UTF-16 code units — the same function {@link contentKey} is built on,
+ * exported for callers that need a stable bucket index rather than a fingerprint (the search shards).
+ *
+ * It names files, so it must be identical on every machine: no locale data, no platform hash, no
+ * randomness. Non-cryptographic on purpose, exactly like the fingerprint above.
+ */
+export function stableHash32(input: string): number {
+  return fnv32(input, FNV_OFFSET_A);
+}
+
 /** Collapse whitespace and case so cosmetic differences do not read as new content. */
 export function normalizeText(input: string): string {
   return input

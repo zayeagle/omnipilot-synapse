@@ -62,8 +62,15 @@ body {
  * sits beside, and a failed line is a chip instead of bare red text.
  */
 /* The three lists share one pane area: one question at a time, no competing scroll. */
+.panes {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
 .tabs.list-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: 4px;
   border-top: 1px solid var(--op-line);
   padding-top: 8px;
@@ -265,6 +272,12 @@ button.link {
 
 .notice[data-kind="blocked"] {
   color: var(--op-danger);
+  border-color: currentColor;
+}
+
+/* A request is in flight: the status line is the only place that says so. */
+.notice[data-kind="working"] {
+  color: var(--op-accent);
   border-color: currentColor;
 }
 
