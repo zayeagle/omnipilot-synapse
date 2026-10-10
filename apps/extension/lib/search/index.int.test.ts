@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { newKnowledgeCard, newSourceItem, type CkfRecord } from '../core/ckf';
-import { SearchIndex, shardKeyFromPath, type SearchStore } from './index';
+import { SHARD_READ_CONCURRENCY, SearchIndex, shardKeyFromPath, type SearchStore } from './index';
 import { parseShard, type PostingsShard } from './postings';
 
 const NOW = Date.parse('2026-06-01T00:00:00.000Z');
@@ -215,8 +215,10 @@ describe('SearchIndex (F4 INT)', () => {
 
   it('TC-F4-I03 flags a corrupt shard or an unreachable store instead of throwing', async () => {
     const { store, index } = await seeded();
-    const first = [...store.shards.keys()][0] ?? '';
-    store.shards.set(first, '{ corrupt');
+    // A6 (2026-10-09): a query reads only the buckets its own terms live in, so corrupting one arbitrary
+    // shard is no longer guaranteed to be in its path. Corrupt every shard to keep the case deterministic -
+    // the point of the arm is that damage IN THE WAY OF A QUERY is reported instead of throwing.
+    for (const key of [...store.shards.keys()]) store.shards.set(key, '{ corrupt');
 
     const corrupt = await index.query('spaced repetition');
     expect(corrupt.needsRebuild).toBe(true);
@@ -226,9 +228,9 @@ describe('SearchIndex (F4 INT)', () => {
 
     store.failRead = false;
     store.failList = true;
-    const offline = await index.query('spaced repetition');
-    expect(offline.needsRebuild).toBe(true);
-    expect(offline).toHaveLength(0);
+    // A6 (2026-10-09): a store that cannot be listed is reported as unreachable, not as a corrupt index.
+    // `needsRebuild` is kept for the one failure a rebuild can actually fix (the directory is missing).
+    await expect(index.query('spaced repetition')).rejects.toThrow();
 
     // A repository that simply has no index yet is not corrupt.
     store.failList = false;
@@ -323,6 +325,8 @@ describe('SearchIndex (F4 INT)', () => {
     // Overlapped, so a page no longer waits for one round trip per shard...
     expect(store.peakInFlight).toBeGreaterThan(1);
     // ...but bounded, because the shard reads are the burst a capture is allowed to make.
-    expect(store.peakInFlight).toBeLessThanOrEqual(8);
+    // Derived from the constant on purpose (A6, 2026-10-09): a hardcoded 8 silently became a lie the
+    // moment the cap was raised for the 3-second budget.
+    expect(store.peakInFlight).toBeLessThanOrEqual(SHARD_READ_CONCURRENCY);
   });
 });

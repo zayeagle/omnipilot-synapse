@@ -61,7 +61,13 @@ import {
 import { dueRows } from './due';
 
 const LANG: Lang = detectLang(typeof navigator === 'undefined' ? null : navigator.language);
-const INBOX_LIMIT = 3;
+/*
+ * How many Inbox rows are rendered. It was 3 back when the lists shared one scroll with the composer and
+ * the status block, so a long list pushed everything else off screen. The lists have their own tab and
+ * their own scrolling pane now, so the Inbox can afford a real page of recent notes instead of three -
+ * three made the Inbox useless exactly when it mattered (once you have more than three notes).
+ */
+const INBOX_LIMIT = 20;
 
 const STATUS_ROWS: ReadonlyArray<{ key: keyof StatusLine; labelKey: string }> = [
   { key: 'store', labelKey: 'status.store' },
@@ -598,12 +604,15 @@ function main(): void {
     renderSyncPanel();
   }
 
-  function renderSearch(rows: SearchResultRow[], needsRebuild: boolean): void {
+  function renderSearch(rows: SearchResultRow[], needsRebuild: boolean, indexMissing = false): void {
     clear(searchList);
     searchMessage.hidden = rows.length > 0;
     searchMessage.dataset['kind'] = needsRebuild ? 'error' : 'info';
     if (needsRebuild && rows.length === 0) {
       searchMessage.textContent = t('popup.searchNeedsRebuild', null, LANG);
+    } else if (indexMissing && rows.length === 0) {
+      // True and actionable: nothing has been indexed yet, and the rebuild is one click away in settings.
+      searchMessage.textContent = t('search.indexMissing', null, LANG);
     } else {
       searchMessage.textContent = t('popup.searchEmpty', null, LANG);
     }
@@ -1075,7 +1084,7 @@ function main(): void {
       branch: prefs.branch,
       limit: 5,
     });
-    renderSearch(view.rows, view.needsRebuild);
+    renderSearch(view.rows, view.needsRebuild, view.indexMissing);
   }
 
   async function toggleEnabled(): Promise<void> {

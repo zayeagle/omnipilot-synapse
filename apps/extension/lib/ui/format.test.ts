@@ -738,7 +738,11 @@ describe('sync + search projections (F5 UNIT)', () => {
     expect(run.conflicts).toBe(1);
     expect(run.upToDate).toBe(false);
     expect(normalizeSyncResult({ outcome: 'upToDate' }).upToDate).toBe(true);
-    expect(normalizeSyncResult('nonsense').outcome).toBe('failed');
+    // A6 (2026-10-10): an unrecognised reply is UNKNOWN, never a failure. The old expectation pinned the bug
+    // the owner kept seeing: every `sync.now` reply is `{report, prefs}`, which missed this projection's
+    // top-level read, so the console announced "last sync failed" whatever the sync had actually done.
+    expect(normalizeSyncResult('nonsense').outcome).toBe('');
+    expect(normalizeSyncResult({ report: { outcome: 'upToDate' } }).outcome).toBe('upToDate');
     expect(normalizeSyncResult(undefined).pulled).toBe(0);
   });
 

@@ -43,7 +43,7 @@ export const RETRY_BACKOFF_MS = 400;
  * Not higher on purpose: the host asks for serial requests and its secondary limit is aimed at bursts,
  * and 258 requests per capture already sits well inside the 5000-per-hour budget.
  */
-const BLOB_UPLOAD_CONCURRENCY = 12;
+const BLOB_UPLOAD_CONCURRENCY = 20;
 
 /** The injected transport. Structurally `fetch`, so `createGithubApi({ fetchImpl: fetch })` works. */
 export type FetchLike = (url: string, init: RequestInit) => Promise<Response>;

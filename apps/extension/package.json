@@ -2,7 +2,7 @@
   "name": "@omnipilot/synapse-extension",
   "description": "OmniPilot Synapse browser extension — capture → inbox → AI distill → GitHub knowledge base",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "icons": "node scripts/gen-icons.mjs",

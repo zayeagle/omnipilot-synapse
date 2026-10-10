@@ -136,6 +136,13 @@ function main(): void {
   let companion: CompanionState = 'missing';
   let branchNoticeView: BranchNotice | null = null;
   let syncStatus: SyncStatusView = normalizeSyncStatus(null);
+  /**
+   * Why the last sync failed, straight from the state the worker persists.
+   *
+   * The panel used to show the outcome alone, so a failure had no readable cause and therefore no action -
+   * which is the one thing the product rules are explicit about (failure visible, with a reason).
+   */
+  let syncFailureCode = '';
   let searchQuery = '';
   let searchBusy = false;
 
@@ -161,10 +168,30 @@ function main(): void {
   /* --------------------------------- chrome -------------------------------- */
 
   const header = el('header');
+  /*
+   * The version the browser actually LOADED, read from the manifest rather than from a constant.
+   *
+   * A session of fixes can look like no fix at all when the reload does not load the built folder, and
+   * nothing on screen said which code was running. This line answers that question in one glance: if it does
+   * not show the version you just built, the browser is loading something else.
+   */
+  const manifestVersion = ((): string => {
+    try {
+      return browser.runtime.getManifest().version;
+    } catch {
+      // A bare harness has no manifest: the line is then simply absent rather than a failed mount.
+      return '';
+    }
+  })();
   header.append(
     el('h1', undefined, t('options.title', null, LANG)),
     el('p', 'tagline', t('app.tagline', null, LANG)),
   );
+  if (manifestVersion.length > 0) {
+    const versionLine = el('p', 'tagline', 'v' + manifestVersion);
+    versionLine.dataset['testid'] = 'build-version';
+    header.append(versionLine);
+  }
 
   const nav = el('nav', 'tabs');
   const content = el('div', 'content');
@@ -872,6 +899,15 @@ function main(): void {
   function renderSync(): void {
     syncOutcomeBadge.textContent = t(`options.sync.outcome.${syncStatus.outcome}`, null, LANG);
     syncOutcomeBadge.dataset['kind'] = syncStatus.outcome === 'failed' ? 'public' : 'private';
+    // The reason, in the panel and not only in a toast: a toast is gone by the time the user decides what to
+    // do, and this is the line they come back to. The sentence is the shipped translation for the code.
+    if (syncStatus.outcome === 'failed' && syncFailureCode.length > 0) {
+      const described = describeError(syncFailureCode, LANG);
+      syncMessage.hidden = false;
+      syncMessage.dataset['kind'] = 'error';
+      syncMessage.textContent =
+        described.hint === null ? described.message : `${described.message} — ${described.hint}`;
+    }
     const detail = [
       `${t('options.sync.lastSync', null, LANG)}: ${
         syncStatus.lastSyncAt.length > 0 ? syncStatus.lastSyncAt : t('options.sync.never', null, LANG)
@@ -912,11 +948,12 @@ function main(): void {
     syncNowButton.disabled = searchBusy || syncStatus.outcome === 'busy';
   }
 
-  function renderSearch(rows: SearchResultRow[], needsRebuild: boolean): void {
+  function renderSearch(rows: SearchResultRow[], needsRebuild: boolean, indexMissing = false): void {
     clear(searchList);
     searchMessage.hidden = rows.length > 0;
     searchMessage.dataset['kind'] = needsRebuild ? 'error' : 'info';
     if (needsRebuild) searchMessage.textContent = t('options.search.needsRebuild', null, LANG);
+    else if (indexMissing) searchMessage.textContent = t('search.indexMissing', null, LANG);
     else if (searchQuery.length === 0) searchMessage.textContent = t('options.search.emptyQuery', null, LANG);
     else searchMessage.textContent = t('options.search.empty', null, LANG);
 
@@ -1251,6 +1288,9 @@ function applyFormToInputs(): void {
       return;
     }
     syncStatus = normalizeSyncStatus(response.data);
+    const raw = response.data as { state?: { lastErrorCode?: unknown } } | null;
+    syncFailureCode =
+      typeof raw?.state?.lastErrorCode === 'string' ? raw.state.lastErrorCode : '';
     renderSync();
   }
 
@@ -1265,9 +1305,22 @@ function applyFormToInputs(): void {
       return;
     }
     const result = normalizeSyncResult(response.data);
+    /*
+     * The OUTCOME decides the sentence. It used to read "Sync finished — <outcome>", so a failed sync called
+     * itself finished and then contradicted itself on the same line, and it arrived in the success colour:
+     * the one state that most needs to be unmistakable was the one that looked like a success.
+     */
+    // No outcome at all is not a failure: redraw the panel from the state and say nothing about a result
+    // that was not reported. (`normalizeSyncResult` no longer invents `failed`.)
+    if (result.outcome === '') {
+      await reloadSyncStatus();
+      return;
+    }
+    const failed = result.outcome === 'failed';
+    const label = t(`options.sync.outcome.${result.outcome}`, null, LANG);
     toast.show(
-      `${t('options.sync.done', null, LANG)} — ${t(`options.sync.outcome.${result.outcome}`, null, LANG)}`,
-      'success',
+      failed ? label : `${t('options.sync.done', null, LANG)} — ${label}`,
+      failed ? 'error' : 'success',
     );
     await reloadSyncStatus();
   }
@@ -1355,7 +1408,7 @@ function applyFormToInputs(): void {
       branch: form.branch,
       limit: 10,
     });
-    renderSearch(view.rows, view.needsRebuild);
+    renderSearch(view.rows, view.needsRebuild, view.indexMissing);
   }
 
   async function rebuildIndex(): Promise<void> {
@@ -1368,7 +1421,36 @@ function applyFormToInputs(): void {
       showErrorCode(response.code);
       return;
     }
-    toast.show(t('options.search.rebuilt', null, LANG), 'success');
+    /*
+     * The counts are shown on purpose. A rebuild that indexed nothing used to report a plain success, which
+     * is exactly how a repository ended up with no search/ directory while the UI said the index had been
+     * rebuilt. `0 / 0` is a lie made visible, and the empty case says what to do about it.
+     */
+    const rebuilt = response.data as { records?: number; shards?: number; indexable?: number } | null;
+    const rebuiltRecords = rebuilt?.records ?? 0;
+    const rebuiltShards = rebuilt?.shards ?? 0;
+    const rebuiltIndexable = rebuilt?.indexable ?? rebuiltRecords;
+    const counts = `${rebuiltRecords} / ${rebuiltShards}`;
+    /*
+     * Each outcome gets its own sentence, because they need different things from the user:
+     *   no records        -> sync first (there is nothing to index yet)
+     *   no indexable text -> the records are empty, so no rebuild can ever help
+     *   nothing written   -> the index already matches; this is up to date, NOT a failure
+     * A bare `1 / 0` told the owner none of that.
+     */
+    if (rebuiltRecords === 0) {
+      toast.show(`${t('options.search.rebuiltEmpty', null, LANG)} · ${counts}`, 'info');
+      return;
+    }
+    if (rebuiltIndexable === 0) {
+      toast.show(`${t('options.search.rebuiltNoShards', null, LANG)} · ${counts}`, 'info');
+      return;
+    }
+    if (rebuiltShards === 0) {
+      toast.show(`${t('options.search.rebuiltUpToDate', null, LANG)} · ${counts}`, 'success');
+      return;
+    }
+    toast.show(`${t('options.search.rebuilt', null, LANG)} · ${counts}`, 'success');
     if (searchQuery.length > 0) await runSearch();
   }
 

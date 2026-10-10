@@ -61,8 +61,11 @@ test('TC-F8-E01 the in-flight state is on the status line, never on a button', a
     await expect(
       popup.getByRole('button', { name: dictText(lang, 'popup.working'), exact: true }),
     ).toHaveCount(0);
+    // A6 (2026-10-10): the clip buttons are gone - clipping a selection is a page gesture now - and the
+    // composer is on screen from the start. The panel's one action is its save; the property this case pins is
+    // that no action ever takes the in-flight state as its own caption.
     await expect(
-      popup.getByRole('button', { name: dictText(lang, 'popup.clipPage'), exact: true }),
+      popup.getByRole('button', { name: dictText(lang, 'popup.noteSave'), exact: true }),
     ).toHaveCount(1);
 
     // Over: the line goes back to the readiness answer instead of staying on "处理中…".
@@ -74,35 +77,24 @@ test('TC-F8-E01 the in-flight state is on the status line, never on a button', a
   }
 });
 
-test('TC-F8-E02 the action row carries one emphasis, and the surface below follows it', async () => {
+test('TC-F8-E02 the composer is on screen without a click, and its save is the one action', async () => {
   const { popup, lang, ...extension } = await openPopupWithStore();
   try {
-    const note = popup.getByRole('button', { name: dictText(lang, 'popup.writeNote'), exact: true });
-    const clip = popup.getByRole('button', { name: dictText(lang, 'popup.clipPage'), exact: true });
-    const clipSelection = popup.getByRole(
-      'button',
-      { name: dictText(lang, 'popup.clipSelection'), exact: true },
-    );
+    // A6 (2026-10-10): the owner asked for the input to be there immediately, so the 记笔记 button and its
+    // cancel are gone. What is pinned is the property that replaced them: reaching the composer costs no
+    // click, and the panel offers exactly one action - no clip buttons have crept back either.
     const compose = popup.locator('section.compose');
-
-    // At rest nothing claims to be the chosen action, and no surface is open for one.
-    await expect(note).not.toHaveClass(/primary/u);
-    await expect(clip).not.toHaveClass(/primary/u);
-    await expect(clipSelection).not.toHaveClass(/primary/u);
-    await expect(compose).toBeHidden();
-
-    // 记笔记 selects itself and opens its own surface — the one mode that has a form to show.
-    await note.click();
-    await expect(note).toHaveClass(/primary/u);
-    await expect(clip).not.toHaveClass(/primary/u);
-    await expect(clipSelection).not.toHaveClass(/primary/u);
     await expect(compose).toBeVisible();
-
-    // A clip takes the emphasis over, and the composer goes away with the mode that owned it.
-    await clip.click();
-    await expect(clip).toHaveClass(/primary/u);
-    await expect(note).not.toHaveClass(/primary/u);
-    await expect(compose).toBeHidden();
+    await expect(compose.locator('textarea')).toBeVisible();
+    await expect(
+      popup.getByRole('button', { name: dictText(lang, 'popup.noteSave'), exact: true }),
+    ).toHaveCount(1);
+    await expect(
+      popup.getByRole('button', { name: dictText(lang, 'popup.writeNote'), exact: true }),
+    ).toHaveCount(0);
+    await expect(
+      popup.getByRole('button', { name: dictText(lang, 'popup.clipPage'), exact: true }),
+    ).toHaveCount(0);
   } finally {
     await extension.dispose();
   }

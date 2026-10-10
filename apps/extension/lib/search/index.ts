@@ -25,6 +25,7 @@
  */
 
 import { mapWithConcurrency } from '../concurrency';
+import { NotFoundError } from '../store/errors';
 import { type CkfRecord } from '../core/ckf';
 import { cardPath, sourceItemPath, topicPath } from '../core/paths';
 import { type RepoFile } from '../store/types';
@@ -48,7 +49,8 @@ import {
   type SearchHit,
   type SearchResponse,
 } from './query';
-import { compareText, isShardKey, shardKey } from './tokenize';
+import { parseQuery } from './query';
+import { compareText, isShardKey, shardKey, tokenizeForSearch } from './tokenize';
 
 /**
  * How many shard reads may be in flight at once.
@@ -57,7 +59,13 @@ import { compareText, isShardKey, shardKey } from './tokenize';
  * that is meant to be two steps take as long as a full index rebuild. Eight takes the win without
  * turning one capture into a burst a host would rate-limit.
  */
-const SHARD_READ_CONCURRENCY = 8;
+/*
+ * Caps for the fan-out. They are the knob that decides wall time: with ~40 shards per Chinese note, 8
+ * concurrent reads means five waves, and on a slow connection every wave is a visible pause. GitHub
+ * documents a ceiling of ~100 concurrent requests and its abuse detection targets content CREATING bursts,
+ * so reads go higher than writes.
+ */
+export const SHARD_READ_CONCURRENCY = 24;
 
 /**
  * What a directory listing can carry before it may be truncated.
@@ -292,8 +300,16 @@ export class SearchIndex {
         : await this.listShardKeys();
 
     const files: RepoFile[] = [];
-    for (const key of keys) {
-      const text = await this.store.readShard(key);
+    /*
+     * Reads run concurrently, exactly as in `changedShards`. Sequentially this was the last serial loop in
+     * the index and it sits on the archive/delete path: a Chinese note touches some forty shards, so the
+     * round trips were forty deep before anything was written.
+     */
+    const loaded = await mapWithConcurrency(keys, SHARD_READ_CONCURRENCY, async (key) => ({
+      key,
+      text: await this.store.readShard(key),
+    }));
+    for (const { key, text } of loaded) {
       const current = parseShard(text);
       if (current === null) continue;
       const updated = removeRecord(current, id);
@@ -328,22 +344,43 @@ export class SearchIndex {
 
     const files: RepoFile[] = [];
     const builtKeys = [...built.keys()].sort(compareText);
-    for (const key of builtKeys) {
+    /*
+     * The previous content of every shard is read CONCURRENTLY. This loop used to be one serial round trip per
+     * shard, which is why a rebuild felt like it hung: measured at 20 ms per request, a single note's rebuild
+     * made ~87 sequential reads (2.6 s) and a real connection would multiply that by seven. `changedShards` and
+     * `remove` already read this way; the recovery path was the one left behind.
+     */
+    const previousShards = await mapWithConcurrency(
+      builtKeys,
+      SHARD_READ_CONCURRENCY,
+      async (key) => ({ key, text: await this.store.readShard(key) }),
+    );
+    for (const { key, text } of previousShards) {
       const shard = built.get(key);
       if (shard === undefined) continue;
       const content = serializeShard(shard);
-      const previous = parseShard(await this.store.readShard(key));
+      const previous = parseShard(text);
       if (previous !== null && serializeShard(previous) === content) continue;
       files.push({ path: shardPath(key, this.prefix), content });
     }
 
-    for (const key of await this.listShardKeys()) {
-      if (built.has(key)) continue;
+    const orphans = (await this.listShardKeys()).filter((key) => !built.has(key));
+    // Same reason as above: an orphan shard used to cost a serial read of its own.
+    const previousOrphans = await mapWithConcurrency(
+      orphans,
+      SHARD_READ_CONCURRENCY,
+      async (key) => ({ key, text: await this.store.readShard(key) }),
+    );
+    for (const { key, text } of previousOrphans) {
       if (this.store.removeShard) {
         await this.store.removeShard(key);
         continue;
       }
-      const previous = parseShard(await this.store.readShard(key));
+      // A shard under a key this version does not write cannot be "blanked" into validity: the KEY is what
+      // the query rejects, so writing an empty shard at the same path left `stale` true forever and made
+      // "needs rebuild" permanent. Those paths are deleted by the caller instead (A6).
+      if (!isShardKey(key)) continue;
+      const previous = parseShard(text);
       if (previous !== null && Object.keys(previous.terms).length === 0) continue;
       files.push({ path: shardPath(key, this.prefix), content: serializeShard(emptyShard()) });
     }
@@ -380,21 +417,75 @@ export class SearchIndex {
    * unreadable one into `needsRebuild` rather than an exception, and never throws on a bad query.
    */
   async query(text: string, options: { limit?: number } = {}): Promise<SearchResponse> {
+    /*
+     * Only the buckets this query's terms live in are read. Reading every listed shard is why a search got
+     * slower the larger the corpus grew: a query needs a handful of keys, and the listing is only used to
+     * know which of them EXIST (an empty listing means nothing is indexed, so nothing is read at all).
+     */
+
+    const wanted = new Set<string>();
+    for (const term of tokenizeForSearch(text)) wanted.add(shardKey(term));
+    for (const term of parseQuery(text).indexTerms) wanted.add(shardKey(term));
+
     let keys: string[];
     try {
-      keys = await this.listShardKeys();
-    } catch {
-      // The store itself is unreachable: report "rebuild needed" instead of failing the caller.
-      return Object.assign([] as SearchHit[], { needsRebuild: true, terms: [] as string[] });
+      const listed = new Set(await this.listShardKeys());
+
+      keys = listed.size === 0 ? [] : [...wanted].sort(compareText).filter((key) => listed.has(key));
+    } catch (error) {
+      /*
+       * A MISSING directory means the index was never built, and a rebuild is exactly the right action - that
+       * is the case `needsRebuild` was named for, and the UI already offers the rebuild.
+       *
+       * Anything else (transport, auth, a rate limit) is NOT an index problem, and reporting it as one sends
+       * the user to rebuild an index that is fine: it hides the real reason, which the product rules forbid.
+       * So it is thrown as itself, and the UI shows the failure it actually was, with its own action.
+       */
+      if (error instanceof NotFoundError) {
+        /*
+         * No directory at all is an EMPTY index, not a damaged one, and treating it as damaged created a loop:
+         * a rebuild that has nothing to write (records with no indexable text - a bare `1 / 0`) never creates
+         * the directory, so the next search asked for a rebuild again, forever. The reply says the index has
+         * not been built yet, which is both true and actionable; it does not claim corruption.
+         */
+        return Object.assign([] as SearchHit[], {
+          indexMissing: true,
+          needsRebuild: false,
+          terms: [] as string[],
+        });
+      }
+      throw error;
+    }
+
+    /*
+     * Nothing indexed at all: an EMPTY index, not a damaged one. Reporting it as damaged created a loop the
+     * owner actually hit - a rebuild with nothing to write (records carrying no indexable text) never creates
+     * the directory, so every search asked for that rebuild again. The reply says the index is missing, which
+     * is true and actionable, and never claims corruption.
+     */
+    if (keys.length === 0) {
+      return Object.assign([] as SearchHit[], {
+        indexMissing: true,
+        needsRebuild: false,
+        terms: [],
+      });
     }
 
     const shards: RawShard[] = [];
     // A shard under a key this version does not write was committed by the prefix scheme. Its bytes are
     // valid, so nothing below would notice — but the postings a query needs now live in buckets, so
     // answering from it would silently drop results. Rebuild is the fix, and the UI already offers it.
-    let stale = false;
+    let staleKeys = 0;
+    let validKeys = 0;
     for (const key of keys) {
-      if (!isShardKey(key)) stale = true;
+      // Shards left behind by the older key scheme are RESIDUE, not a reason to rebuild: once the buckets this
+      // version writes exist, queries are served from them, and treating residue as staleness made "needs
+      // rebuild" permanent (the rebuild could not remove the old keys). It matters only when nothing usable
+      // is left at all.
+      if (!isShardKey(key)) staleKeys += 1;
+      else validKeys += 1;
+    }
+    for (const key of keys) {
       let content: string | null = null;
       try {
         content = await this.store.readShard(key);
@@ -404,6 +495,7 @@ export class SearchIndex {
       shards.push({ key, text: content });
     }
 
+    const stale = staleKeys > 0 && validKeys === 0;
     const response = search(shards, text, {
       docs: await this.documents(),
       now: this.now,

@@ -1050,12 +1050,20 @@ export interface SyncRunView {
 }
 
 export function normalizeSyncResult(value: unknown): SyncRunView {
+  /*
+   * `sync.now` answers `{ report, prefs }`, so the outcome lives one level down. Reading it only at the top
+   * meant no answer ever matched, and every unrecognised shape was reported as `failed`: the owner saw "last
+   * sync failed" after every attempt while the sync row said it had never run. An unrecognised payload is
+   * NOT a failure - it is an unknown, and saying so is the honest thing. `report` is unwrapped first so a
+   * bare report still works.
+   */
   const raw = asRecord(value);
-  const outcome = raw ? raw['outcome'] : undefined;
+  const report = asRecord(raw?.['report']) ?? raw;
+  const outcome = report ? report['outcome'] : undefined;
   const known =
     typeof outcome === 'string' && (SYNC_OUTCOMES as readonly string[]).includes(outcome)
       ? outcome
-      : 'failed';
+      : '';
   return {
     outcome: known,
     pulled: safeCount(raw?.['pulled']),
@@ -1140,6 +1148,8 @@ export interface SearchResultRow {
 export interface SearchResultsView {
   rows: SearchResultRow[];
   needsRebuild: boolean;
+  /** No index has been built yet: an empty state with an action, not a damaged one. */
+  indexMissing: boolean;
 }
 
 /**
@@ -1156,6 +1166,9 @@ export function searchResultRows(
   const raw = asRecord(value);
   const entries = Array.isArray(value) ? value : Array.isArray(raw?.['results']) ? (raw?.['results'] as unknown[]) : [];
   const needsRebuild = raw?.['needsRebuild'] === true || raw?.['needs_rebuild'] === true;
+  // An index that has never been built is not a broken one: the surface says so instead of demanding a rebuild
+  // that, with nothing to index, would write nothing and leave the user in the same place.
+  const indexMissing = raw?.['indexMissing'] === true;
   const max = Number.isFinite(options.limit) && (options.limit ?? 0) > 0 ? Math.floor(options.limit as number) : 8;
   const repo = typeof options.repoFullName === 'string' ? options.repoFullName : '';
   const branch = typeof options.branch === 'string' ? options.branch : '';
@@ -1175,7 +1188,7 @@ export function searchResultRows(
       url: repoFileUrl(repo, branch, path) ?? '',
     });
   }
-  return { rows, needsRebuild };
+  return { rows, needsRebuild, indexMissing };
 }
 
 /* ------------------------------ conflict gate ------------------------------ */

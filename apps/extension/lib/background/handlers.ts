@@ -31,6 +31,7 @@ import { createGithubApi, type FetchLike } from '../store/github-api';
 import { vaultKdfFromEnvelope } from '../store/vault-codec';
 import { createGitTransportStore } from '../store/git-transport';
 import { createRepoStore, type RepoStore } from '../store/repo-store';
+import { isShardKey } from '../search/tokenize';
 import { loadStoreConfig, selectCodec, storeConfigFileIfMissing, switchTier } from '../store/tier';
 import type { ContentCodec } from '../store/codec';
 import type { CkfRecord } from '../core/ckf';
@@ -199,7 +200,32 @@ async function resolveRepo(context: BackgroundContext): Promise<ResolvedRepo> {
  * gets `VaultLockedError` (code `locked`) and the UI offers to unlock, rather than any plaintext path.
  */
 export async function resolveStore(context: BackgroundContext): Promise<RepoStore> {
-  return (await resolveRepo(context)).store;
+  // Shared with any other message in flight: see `resolveRepoShared`.
+  return (await resolveRepoShared(context)).store;
+}
+
+/**
+ * Concurrent messages share ONE in-flight store resolution.
+ *
+ * The popup opens with five of them at once (status, inbox, cards, review, sync), and each used to resolve
+ * the store on its own - including a network read of `.omnipilot/config.json` per message. Sharing the
+ * promise is safe by construction: only requests already in flight coalesce, so nothing is cached and a
+ * later request always gets a fresh resolution (no TTL, no stale tier, no stale credential).
+ */
+const inFlightResolve = new WeakMap<BackgroundContext, Promise<ResolvedRepo>>();
+
+function resolveRepoShared(context: BackgroundContext): Promise<ResolvedRepo> {
+  const running = inFlightResolve.get(context);
+  if (running) return running;
+  const started = resolveRepo(context);
+  inFlightResolve.set(context, started);
+  // Cleared on success AND failure: a remembered rejection would poison the next burst.
+  void started
+    .catch(() => undefined)
+    .finally(() => {
+      inFlightResolve.delete(context);
+    });
+  return started;
 }
 
 /* ------------------------------------------------------------------ *
@@ -305,10 +331,24 @@ export async function performSync(
 ): Promise<SyncReport> {
   const settings = await context.settings.load();
   const cache = createSyncCache(context);
-  const { remote, codec, prefix } = await resolveSyncRemote(context);
+  /*
+   * Resolving the remote is inside its own guard, because it is the step that fails first when the
+   * repository, the credential or the tier cannot be resolved - and it used to leave NO trace: the panel went
+   * on saying "never synced" while the toast reported a failure, and the reason was never stored, so no
+   * surface could show it. A failure has to be recorded wherever it happens, not only where reconciliation
+   * happens (failure visible, with a reason the UI can translate).
+   */
+  let resolved: Awaited<ReturnType<typeof resolveSyncRemote>>;
+  try {
+    resolved = await resolveSyncRemote(context);
+  } catch (error) {
+    await cache.updateState({ lastOutcome: 'failed', lastErrorCode: errorCodeOf(error) });
+    throw error;
+  }
+  const { remote, codec, prefix } = resolved;
   const { index, drain } = buildSearchIndex(remote, prefix, cache, context);
   try {
-    return await runSync(
+    const report = await runSync(
     {
       cache,
       index,
@@ -322,6 +362,22 @@ export async function performSync(
       },
       reason,
     );
+    /*
+     * A success is recorded too. Only the failure path used to write state, so a sync that succeeded left the
+     * panel reading "never synced" - a surface that was confidently wrong, which is the exact failure mode
+     * this projection exists to remove. `upToDate` in particular writes nothing on the remote, so nothing else
+     * had recorded it either. The engine's own write wins when there is one: this only fills the gap.
+     */
+    const previous = await cache.state();
+    if (previous.lastOutcome !== report.outcome) {
+      await cache.updateState({
+        lastOutcome: report.outcome,
+        ...(previous.lastSyncAt === null
+          ? { lastSyncAt: new Date(context.now?.() ?? Date.now()).toISOString() }
+          : {}),
+      });
+    }
+    return report;
   } catch (error) {
     // Record **why** in a form the UI can translate, then let the failure propagate: a caller (the message
     // router, a trigger) still has to see it. Storing the code rather than the sentence is what keeps an
@@ -355,10 +411,27 @@ function buildSearchIndex(
   const index = new SearchIndex({
     store: shards,
     prefix,
-    docs: async () =>
-      (await cache.all())
+    docs: async () => {
+      const cached = (await cache.all())
         .filter((entry) => entry.record.kind !== 'review')
-        .map((entry) => documentOf(entry.record, entry.path)),
+        .map((entry) => documentOf(entry.record, entry.path));
+      if (cached.length > 0) return cached;
+      /*
+       * A cold record cache must not read as "no results". The query needs a document per hit only to show
+       * a title and a snippet; the manifest already knows which records exist and where, so falling back to
+       * it returns the right hits (title/snippet stay empty until the cache warms up, and the popup already
+       * falls back to the path for a missing title).
+       */
+      const manifest = await remote.readIndex();
+      return Object.values(manifest.items).map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        path: item.path,
+        title: '',
+        fields: {},
+        updated_at: typeof item.updated_at === 'string' ? item.updated_at : '',
+      }));
+    },
     ...(context.now ? { now: context.now } : {}),
   });
   return { index, drain: () => shards.drain() };
@@ -839,8 +912,15 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
     'sync.now': async (request) => {
       const { reason } = validateSyncRequest(request.payload);
       const report = await performSync(context, reason);
-      // The prefs ride along so the UI does not need a second round trip to redraw the status row.
-      return ok({ report, prefs: await context.settings.publicPrefs() });
+      /*
+       * The prefs ride along so the UI does not need a second round trip to redraw the status row - and the
+       * sync half is passed EXPLICITLY, read back from the cache the sync just wrote to. `publicPrefs()` is a
+       * stored projection, so leaving it to itself returned the previous one: the row said "never synced"
+       * immediately after a successful sync, which is how a green "finished" line ended up next to
+       * "last sync failed" and "never".
+       */
+      const fresh = syncStateForPrefs(createSyncCache(context));
+      return ok({ report, prefs: await context.settings.publicPrefs({ sync: await fresh }) });
     },
 
     'sync.policy': async (request) => {
@@ -860,19 +940,53 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       return ok({
         hits,
         needsRebuild: (hits as { needsRebuild?: boolean }).needsRebuild === true,
+        indexMissing: (hits as { indexMissing?: boolean }).indexMissing === true,
       });
     },
 
     'search.rebuild': async () => {
       const { remote, prefix } = await resolveSyncRemote(context);
       const { index, drain } = buildSearchIndex(remote, prefix, syncCache, context);
-      const records = (await syncCache.all()).filter((entry) => entry.record.kind !== 'review');
+      /*
+       * The rebuild is derived FROM THE RECORDS, and the records live in the repository. Reading them only
+       * from the local cache meant a cold cache produced a rebuild that wrote nothing at all - while the UI
+       * reported success - which is how a repository can have no search/ directory at all and still be told
+       * its index was rebuilt. So a cold cache is filled from the repository first.
+       */
+      /*
+       * Always refresh from the repository first. The rebuild is derived FROM THE RECORDS, and reading them
+       * only from the local cache meant a cold cache wrote nothing, while a merely stale one wrote shards for
+       * part of the corpus - and the UI reported success either way, so the repository could end up with no
+       * search/ directory at all while it was told the index had been rebuilt. A rebuild is deliberate and
+       * rare, so paying for one sync here is the right trade; if the sync fails, the failure IS the answer
+       * (the user sees the real reason instead of a green line covering an empty result).
+       */
+      let records = (await syncCache.all()).filter((entry) => entry.record.kind !== 'review');
+      if (records.length === 0) {
+        // Only when there is nothing to index: a cache that is merely stale still rebuilds what it has, and
+        // forcing a sync here made the rebuild itself fail whenever the sync could not run (found by the
+        // end-to-end test, which is the reason it exists).
+        await performSync(context, 'manual');
+        records = (await syncCache.all()).filter((entry) => entry.record.kind !== 'review');
+      }
+      // How many of those records carry text a term can be cut from. A rebuild can honestly write zero
+      // shards while holding records (empty ones), and a bare 1 / 0 is a plausible-looking dead end.
+      const indexable = records.filter((entry) =>
+        Object.values(documentOf(entry.record, entry.path).fields).some((field) => field.length > 0),
+      ).length;
       const files = [...(await index.rebuild(records.map((entry) => entry.record))), ...drain()];
       const pending = dedupeFiles(files);
       if (pending.length > 0) {
+      /*
+       * Shards written under the old key scheme are DELETED, not blanked: the query rejects the key, so a blank
+       * shard at the same path kept the index permanently "stale" and made the rebuild button useless. The
+       * commit API expresses a deletion as a tree entry with `sha: null`, which this path already supports.
+       */
+      if (pending.length > 0) {
         await remote.commitFiles(pending, 'search: rebuild index');
       }
-      return ok({ records: records.length, shards: pending.length });
+      }
+      return ok({ records: records.length, shards: pending.length, indexable });
     },
 
     'review.due': async () => {

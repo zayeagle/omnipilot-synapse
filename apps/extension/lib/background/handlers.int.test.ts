@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHandlers, scrubHandlerError, type BackgroundContext } from './handlers';
 import { MessageRouter, createRouterOptions } from './router';
 import { PAGE_CLIP_MESSAGE, type ExtensionResponse } from '../messages';
+import { SyncCache, createMemoryBackend } from '../sync/cache';
+import { shardKey, tokenizeForSearch } from '../search/tokenize';
 import { AiLedger, CaptureQueue } from '../queues';
 import { MIN_ITERATIONS } from '../security/crypto-key';
 import { KeySession, MemorySessionKeyStore } from '../security/key-session';
@@ -40,7 +42,7 @@ interface Recorded {
  * It keeps a small in-memory repository (blob sha → content, tree → paths) so a second capture
  * genuinely re-reads the index it wrote, which is what makes the duplicate path testable.
  */
-function stubFetch(options: { private?: boolean; reply?: string } = {}) {
+function stubFetch(options: { private?: boolean; reply?: string; delayMs?: number } = {}) {
   const calls: Recorded[] = [];
   let commits = 0;
   const blobBySha = new Map<string, string>();
@@ -59,6 +61,9 @@ function stubFetch(options: { private?: boolean; reply?: string } = {}) {
       }
     }
     calls.push({ method, url, body });
+    // Latency injection: the point of the cost test is WALL TIME, which concurrency changes and request
+    // counts do not. A per-call delay makes serial and parallel paths visibly different.
+    if (options.delayMs) await new Promise((resolve) => setTimeout(resolve, options.delayMs));
     const json = (data: unknown, status = 200): Response =>
       new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json' } });
 
@@ -91,7 +96,21 @@ function stubFetch(options: { private?: boolean; reply?: string } = {}) {
     if (method === 'GET' && url.includes('/contents/')) {
       const path = decodeURIComponent(url.split('/contents/')[1]?.split('?')[0] ?? '');
       const content = files.get(path);
-      if (content === undefined) return json({ message: 'Not Found' }, 404);
+      if (content === undefined) {
+        /*
+         * A directory, if anything lives under it: the real contents API answers a directory with an ARRAY
+         * of entries, and returning 404 for one is what the search path saw as "the index was never built".
+         * Without this arm the fixture could only ever describe a repository that has no index at all, so the
+         * search flow (rebuild then query) had no way of being exercised end to end.
+         */
+        const prefix = path === '' ? '' : path + '/';
+        const entries = [...files.keys()]
+          .filter((key) => key.startsWith(prefix))
+          .filter((key) => !key.slice(prefix.length).includes('/'))
+          .map((key) => ({ name: key.slice(prefix.length), path: key, type: 'file', sha: 'sha-' + key }));
+        if (entries.length > 0) return json(entries);
+        return json({ message: 'Not Found' }, 404);
+      }
       return json({
         type: 'file',
         path,
@@ -135,7 +154,7 @@ function stubFetch(options: { private?: boolean; reply?: string } = {}) {
   return { fetchImpl, calls, files, commitCount: () => commits };
 }
 
-function makeWorker(options: { private?: boolean; reply?: string } = {}) {
+function makeWorker(options: { private?: boolean; reply?: string; delayMs?: number } = {}) {
   const area = new MemoryStorageArea();
   const session = new KeySession({
     store: new MemorySessionKeyStore(),
@@ -154,6 +173,10 @@ function makeWorker(options: { private?: boolean; reply?: string } = {}) {
   const pageClip = vi.fn(async () => true);
 
   const context: BackgroundContext = {
+    // One cache for the whole harness, exactly as the worker holds one (background.ts). Without it every
+    // `createSyncCache` call built a fresh memory backend, so a state written by a sync was invisible to the
+    // very next read - which made the sync-state fix untestable here (and hid the bug it fixes).
+    syncCache: new SyncCache(createMemoryBackend()),
     settings,
     queue,
     ledger,
@@ -395,6 +418,249 @@ describe('note delete (F12 INT)', () => {
   });
 });
 
+describe('operation cost (F14 INT) - measured in GitHub requests', () => {
+  const gh = (worker: ReturnType<typeof makeWorker>): number =>
+    worker.calls.filter((call) => call.url.startsWith('https://api.github.com')).length;
+
+  it('TC-F14-I01 measures note entry, archive and delete, and prints the numbers', async () => {
+    const chinese = '能力可以提升我们对自己直觉的信任，这是一段用于测量请求数量的中文正文，包含许多不同的二字前缀。';
+    const english = 'a short english note about shard fan out';
+
+    const w1 = await configuredWorker();
+    let before = gh(w1);
+    const cn = await send(w1, 'capture.request', { mode: 'note', url: 'https://example.com/cn', title: 'CN', selection: chinese });
+    expect(cn.ok).toBe(true);
+    const entryChinese = gh(w1) - before;
+    const cnPath = (cn.ok ? (cn.data as { path: string }).path : '');
+
+    const w2 = await configuredWorker();
+    before = gh(w2);
+    const en = await send(w2, 'capture.request', { mode: 'note', url: 'https://example.com/en', title: 'EN', selection: english });
+    expect(en.ok).toBe(true);
+    const entryEnglish = gh(w2) - before;
+
+    const id = ((cn.ok ? (cn.data as unknown as { item?: { id?: string } }).item?.id : '') ?? '');
+    const listed = await send(w1, 'inbox.list', { limit: 5 });
+    expect(listed.ok).toBe(true);
+    const row = (listed.ok ? (listed.data as Array<{ id: string; path: string }>) : []).find((r) => r.path === cnPath);
+    if (!row) throw new Error('the note is not in the Inbox');
+
+    before = gh(w1);
+    const archived = await send(w1, 'source.archive', { id: row.id, path: cnPath });
+    expect(archived.ok).toBe(true);
+    const archiveCost = gh(w1) - before;
+
+    before = gh(w2);
+    const listed2 = await send(w2, 'inbox.list', { limit: 5 });
+    const row2 = (listed2.ok ? (listed2.data as Array<{ id: string; path: string }>) : [])[0];
+    if (!row2) throw new Error('no row');
+    const removed = await send(w2, 'source.delete', { id: row2.id, path: row2.path });
+    expect(removed.ok).toBe(true);
+    const deleteCost = gh(w2) - before;
+
+    console.log('MEASURED ' + JSON.stringify({ entryChinese, entryEnglish, archiveCost, deleteCost, noteId: id }));
+  });
+});
+
+
+describe('operation latency (F14 INT) - wall time with latency injected', () => {
+  it('TC-F14-I02 measures WALL TIME of archive and delete with per-request latency injected', async () => {
+    const slow = { delayMs: 20 };
+    const worker = await configuredWorker(slow);
+    const body = '能力可以提升我们对自己直觉的信任，这是一段用于测量耗时的中文正文，包含许多不同的二字前缀。';
+    const captured = await send(worker, 'capture.request', { mode: 'note', url: 'https://example.com/t', title: 'T', selection: body });
+    expect(captured.ok).toBe(true);
+    if (!captured.ok) throw new Error('unreachable');
+    const path = (captured.data as { path: string }).path;
+    const listed = await send(worker, 'inbox.list', { limit: 5 });
+    const row = (listed.ok ? (listed.data as Array<{ id: string; path: string }>) : []).find((r) => r.path === path);
+    if (!row) throw new Error('no row');
+
+    const startArchive = Date.now();
+    const archived = await send(worker, 'source.archive', { id: row.id, path });
+    const archiveMs = Date.now() - startArchive;
+    expect(archived.ok).toBe(true);
+
+    const second = await configuredWorker(slow);
+    const captured2 = await send(second, 'capture.request', { mode: 'note', url: 'https://example.com/t2', title: 'T2', selection: body });
+    if (!captured2.ok) throw new Error('unreachable');
+    const path2 = (captured2.data as { path: string }).path;
+    const listed2 = await send(second, 'inbox.list', { limit: 5 });
+    const row2 = (listed2.ok ? (listed2.data as Array<{ id: string; path: string }>) : []).find((r) => r.path === path2);
+    if (!row2) throw new Error('no row2');
+    const startDelete = Date.now();
+    const removed = await send(second, 'source.delete', { id: row2.id, path: path2 });
+    const deleteMs = Date.now() - startDelete;
+    expect(removed.ok).toBe(true);
+
+    console.log('TIMED ' + JSON.stringify({ archiveMs, deleteMs, perCallDelayMs: 20 }));
+  });
+});
+
+describe('popup burst (F14 INT) - one resolution for concurrent messages', () => {
+  it('TC-F14-I03 five messages arriving together read the store config once', async () => {
+    const worker = await configuredWorker();
+    const before = worker.calls.length;
+    await Promise.all([
+      send(worker, 'status.get'),
+      send(worker, 'inbox.list', { limit: 5 }),
+      send(worker, 'cards.list', { limit: 5 }),
+      send(worker, 'review.due'),
+      send(worker, 'sync.status'),
+    ]);
+
+    const burst = worker.calls.slice(before);
+    const configReads = burst.filter((call) => call.url.includes('config.json')).length;
+    console.log('BURST ' + JSON.stringify({ messages: 5, configReads, requests: burst.length }));
+    // Without the share this is one config read per message; with it, one for the whole burst.
+    expect(configReads).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('sync diagnosis (F17 INT)', () => {
+  it('TC-F17-I01 reports what a manual sync actually does', async () => {
+    const worker = await configuredWorker();
+    const res = await send(worker, 'sync.now', { reason: 'manual' });
+    const status = await send(worker, 'sync.status');
+    const syncState = status.ok ? (status.data as { sync?: Record<string, unknown> }).sync : null;
+    const calls = worker.calls
+      .filter((call) => call.url.includes('/git/') || call.url.includes('/contents/'))
+      .slice(-8)
+      .map((call) => call.method + ' ' + call.url.replace('https://api.github.com/repos/zayeagle/omnipilot-synapse', ''));
+    // The state that was just written must be the state the projection reports: this is the assertion that
+    // would have caught a successful sync leaving the row reading "never synced".
+    const prefsSync = res.ok
+      ? (res.data as { prefs?: { sync?: { lastOutcome?: string } } }).prefs?.sync
+      : null;
+    expect(prefsSync?.lastOutcome).toBe('upToDate');
+    console.log('SYNC ' + JSON.stringify({
+      ok: res.ok,
+      code: res.ok ? null : res.code,
+      result: res.ok ? res.data : null,
+      syncState,
+      calls,
+      fileCount: [...worker.files.keys()].length,
+    }));
+    expect(res.ok).toBe(true);
+  });
+});
+
+describe('search end to end (F16 INT)', () => {
+  it('TC-F16-I01 a repository with records but no index rebuilds, and then answers', async () => {
+    const worker = await configuredWorker();
+    const captured = await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/e2e',
+      title: 'E2E 能力可以提升信任',
+      selection: '能力可以提升我们对自己直觉的信任',
+    });
+    console.log('E2E capture ' + JSON.stringify({ ok: captured.ok, code: captured.ok ? null : captured.code }));
+    expect(captured.ok).toBe(true);
+
+    // The state the user is in: the records are in the repository, the index is not.
+    for (const key of [...worker.files.keys()]) if (key.startsWith('search/')) worker.files.delete(key);
+
+    const before = await send(worker, 'search.query', { text: '能力' });
+    const beforeData = before.ok ? (before.data as { needsRebuild?: boolean }) : null;
+    console.log('E2E before ' + JSON.stringify({ ok: before.ok, code: before.ok ? null : before.code, needsRebuild: beforeData?.needsRebuild ?? null }));
+
+    const rebuilt = await send(worker, 'search.rebuild');
+    const rebuiltData = rebuilt.ok ? (rebuilt.data as { records: number; shards: number }) : null;
+    const shardFiles = [...worker.files.keys()].filter((key) => key.startsWith('search/')).length;
+    console.log('E2E rebuilt ' + JSON.stringify({ ok: rebuilt.ok, code: rebuilt.ok ? null : rebuilt.code, rebuiltData, shardFiles }));
+
+    const after = await send(worker, 'search.query', { text: '能力' });
+    const afterData = after.ok ? (after.data as { needsRebuild?: boolean; hits?: unknown[] }) : null;
+    console.log('E2E after ' + JSON.stringify({ ok: after.ok, code: after.ok ? null : after.code, hits: afterData?.hits?.length ?? null, needsRebuild: afterData?.needsRebuild ?? null }));
+
+    expect(rebuiltData?.shards ?? 0).toBeGreaterThan(0);
+    expect(afterData?.needsRebuild).not.toBe(true);
+    expect(afterData?.hits?.length ?? 0).toBeGreaterThan(0);
+  });
+});
+
+describe('search latency (F16 INT)', () => {
+  it('TC-F16-I02 answers a query well inside three seconds with real round-trip times', async () => {
+    const fast = await configuredWorker();
+    const captured = await send(fast, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/lat',
+      title: 'LAT 能力可以提升信任',
+      selection: '能力可以提升我们对自己直觉的信任',
+    });
+    expect(captured.ok).toBe(true);
+    const rebuilt = await send(fast, 'search.rebuild');
+    expect(rebuilt.ok).toBe(true);
+    expect([...fast.files.keys()].some((key) => key.startsWith('search/'))).toBe(true);
+
+    // The same repository, but every request now costs a realistic 150 ms round trip: the budget is about
+    // wall time, and wall time is what request COUNT alone cannot tell you.
+    const timed = await configuredWorker({ delayMs: 150 });
+    for (const [key, value] of fast.files) timed.files.set(key, value);
+
+    const started = Date.now();
+    const res = await send(timed, 'search.query', { text: '能力' });
+    const searchMs = Date.now() - started;
+    const hits = res.ok ? ((res.data as { hits?: unknown[] }).hits?.length ?? 0) : 0;
+    console.log('LATENCY ' + JSON.stringify({ searchMs, hits, perCallDelayMs: 150 }));
+
+    expect(res.ok).toBe(true);
+    expect(hits).toBeGreaterThan(0);
+    // The stated budget: a keyword search has to be usable, and three seconds is the line.
+    expect(searchMs).toBeLessThan(3000);
+  });
+});
+
+describe('a repository with no index (F16 INT)', () => {
+  it('TC-F16-I03 reports an empty index as missing, never as corrupt', async () => {
+    const worker = await configuredWorker();
+    const captured = await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/missing',
+      title: 'MISSING 能力',
+      selection: '能力可以提升我们对自己直觉的信任',
+    });
+    expect(captured.ok).toBe(true);
+    // Take the index away: the records stay, the search/ directory does not exist.
+    for (const key of [...worker.files.keys()]) if (key.startsWith('search/')) worker.files.delete(key);
+
+    const reply = await send(worker, 'search.query', { text: '能力' });
+    expect(reply.ok).toBe(true);
+    if (!reply.ok) throw new Error('unreachable');
+    const data = reply.data as { needsRebuild?: boolean; indexMissing?: boolean; hits?: unknown[] };
+    console.log('MISSING-INDEX ' + JSON.stringify({
+      indexMissing: data.indexMissing ?? null,
+      needsRebuild: data.needsRebuild ?? null,
+      hits: data.hits?.length ?? null,
+    }));
+    // The loop the owner hit: "needs rebuild" next to a rebuild that writes nothing.
+    expect(data.indexMissing).toBe(true);
+    expect(data.needsRebuild).toBe(false);
+    expect(data.hits?.length ?? 0).toBe(0);
+  });
+});
+
+describe('rebuild cost (F14 INT)', () => {
+  it('TC-F14-I04 measures a rebuild with per-request latency injected', async () => {
+    const worker = await configuredWorker({ delayMs: 20 });
+    const captured = await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/rebuild',
+      title: 'REBUILD 能力可以提升信任',
+      selection: '能力可以提升我们对自己直觉的信任，这是一段用于测量重建耗时的中文正文，包含许多不同的二字前缀。',
+    });
+    expect(captured.ok).toBe(true);
+
+    const started = Date.now();
+    const rebuilt = await send(worker, 'search.rebuild');
+    const rebuildMs = Date.now() - started;
+    const data = rebuilt.ok ? (rebuilt.data as { records?: number; shards?: number; indexable?: number }) : null;
+    const before = worker.calls.length;
+    console.log('REBUILD ' + JSON.stringify({ rebuildMs, data, calls: before, perCallDelayMs: 20 }));
+    expect(rebuilt.ok).toBe(true);
+  });
+});
+
 async function send(
   worker: ReturnType<typeof makeWorker>,
   type: string,
@@ -404,7 +670,7 @@ async function send(
   return worker.router.handle({ type, payload }, sender as never);
 }
 
-async function configuredWorker(options: { private?: boolean; reply?: string } = {}) {
+async function configuredWorker(options: { private?: boolean; reply?: string; delayMs?: number } = {}) {
   const worker = makeWorker(options);
   await send(worker, 'vault.setup', { passphrase: PASSPHRASE });
   const saved = await send(worker, 'settings.github', {
