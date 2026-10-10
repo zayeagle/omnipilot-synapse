@@ -22,6 +22,19 @@ Feature: **F11 手工录入（写笔记）** · 复杂度 M · autopilot
 
 ## Open Backlog
 
+### 决策记录：索引改本机（F16，2026-10-10）
+
+业主选定方案 B：检索索引只存本机（IndexedDB），仓库只保留记录。设计见 04-design 的 F16 一节。
+
+实施顺序：
+1. 扩 `SyncRemote.commitFiles` 支持 `deleted`（token 路径用 `sha: null`；SSH 路径 `deleteUnsupported`）。
+2. 索引存储改为 IndexedDB + 固定 64 桶 + `builtForHead` 陈旧判定。
+3. 迁移：删除仓库中既有 `search/**`。
+4. 检索路径改读本机索引；同步后自动更新索引。
+5. 测试与实测（改前/改后：捕获请求数、仓库文件数、检索与重建耗时）。
+
+顺带解决：Open Backlog 中「vault 档位下检索分片是明文」一项随本改动**根除**（索引不再进仓库）。
+
 ### 检索修复进展（2026-10-09）
 
 **已修（但不是根因）**：lib/search/index.ts 的候选筛选原先在列表"短于上限"时就过滤，把**空列表**当成了
