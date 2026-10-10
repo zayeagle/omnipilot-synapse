@@ -316,7 +316,7 @@ beforeEach(() => {
 });
 
 describe('popup console mount (F8 UNIT)', () => {
-  it('TC-F8-U02 renders the status rows, the Inbox and the clip buttons', async () => {
+  it('TC-F8-U02 renders the status rows, the Inbox and the one action the panel still has', async () => {
     const app = await mount(() => import('../../entrypoints/popup/main'));
     const text = app.textContent ?? '';
 
@@ -326,7 +326,11 @@ describe('popup console mount (F8 UNIT)', () => {
     // An Inbox row with both of its actions.
     expect(text).toContain('A captured page');
     const labels = [...app.querySelectorAll('button')].map((node) => node.textContent ?? '');
-    expect(labels.some((label) => label.includes('剪藏本页'))).toBe(true);
+    // A6 (2026-10-09): clipping moved to the page (select text -> the bubble), so the panel must NOT grow
+    // clip buttons back. The remaining action is 记笔记.
+    expect(labels.some((label) => label.includes('剪藏'))).toBe(false);
+    // The composer is the panel's own surface now, so its save button is what proves it is mounted.
+    expect(labels.some((label) => label.includes('录入笔记'))).toBe(true);
     expect(labels.some((label) => label.includes('提炼'))).toBe(true);
     expect(labels.some((label) => label.includes('打开'))).toBe(true);
     // Settings is an icon button now, so its name lives in the accessible label rather than in text.
@@ -336,20 +340,16 @@ describe('popup console mount (F8 UNIT)', () => {
       ),
     ).toBe(true);
     expect(labels.some((label) => label.includes('刷新'))).toBe(true);
-    const clip = [...app.querySelectorAll('button')].find((node) =>
-      (node.textContent ?? '').includes('剪藏本页'),
-    );
-    expect(clip?.disabled).toBe(false);
     expect(sent.some((entry) => entry.type === 'status.get')).toBe(true);
     expect(sent.some((entry) => entry.type === 'inbox.list')).toBe(true);
   });
 
-  it('TC-F8-U02 disables clipping and explains why when the repository is public', async () => {
+  it('TC-F8-U02 disables the remaining action and explains why when the repository is public', async () => {
     probeVisibility = 'public';
     const app = await mount(() => import('../../entrypoints/popup/main'));
     expect(app.textContent ?? '').toContain('公开仓库');
     for (const node of app.querySelectorAll('button')) {
-      if ((node.textContent ?? '').includes('剪藏')) expect(node.disabled).toBe(true);
+      if ((node.textContent ?? '').includes('录入笔记')) expect(node.disabled).toBe(true);
     }
   });
 
@@ -726,5 +726,23 @@ describe('popup 待处理 — the proposal decision surface (F3 UNIT)', () => {
     expect(text).toContain('保险库已锁定');
     expect(text).toContain('请先解锁保险库');
     expect(text).not.toContain('没有待处理的提案');
+  });
+
+  // A6 (2026-10-09): the owner asked for the composer to be visible immediately, so the reveal button and
+  // its cancel are gone. What stays pinned is the property that actually matters: the input is there
+  // without a click, and saving is the one action it offers.
+  it('TC-F8-U08 the composer is on screen without a click, and offers one save action', async () => {
+    const app = await mount(() => import('../../entrypoints/popup/main'));
+    const panel = app.querySelector('.compose') as HTMLElement | null;
+    expect(panel).not.toBeNull();
+    if (!panel) throw new Error('no composer');
+    expect(panel.hidden).toBe(false);
+    expect(panel.querySelector('textarea')).not.toBeNull();
+
+    const labels = [...panel.querySelectorAll('button')].map((node) => node.textContent ?? '');
+    expect(labels.some((label) => label.includes('录入笔记'))).toBe(true);
+    // No toggle left behind: nothing in the panel exists only to reveal or hide the composer.
+    expect(labels.some((label) => label.includes('记笔记'))).toBe(false);
+    expect(labels.some((label) => label.includes('取消'))).toBe(false);
   });
 });

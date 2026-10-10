@@ -119,6 +119,13 @@ section {
   flex-direction: column;
 }
 
+.blocked {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-start;
+}
+
 .compose {
   display: flex;
   flex-direction: column;
@@ -527,4 +534,293 @@ details.more[open] > summary::before {
 
 details.more[open] {
   padding-bottom: 4px;
+}
+
+/*
+ * 窗口排版与节奏 —— 浮动窗口比 toolbar 弹窗宽得多，直接复用弹窗的窄版式会显得空且散。三件事：
+ * 内容限宽居中（一行太长读不动）、页签从一排普通按钮变成分段控件、行与行之间用发丝线而不是空白。
+ * 这些规则放在文件末尾，靠层叠顺序覆盖同名规则，不改动上面的既有声明。
+ */
+body[data-mode='window'] .popup {
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 14px 16px 16px;
+  gap: 10px;
+}
+
+.tabs.list-tabs {
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--op-line);
+  border-radius: 8px;
+}
+
+.tabs.list-tabs button {
+  border-color: transparent;
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.tabs.list-tabs button[aria-selected='true'] {
+  background: var(--op-accent);
+  border-color: var(--op-accent);
+  color: #fff;
+}
+
+.tabs.list-tabs button:disabled {
+  opacity: 0.45;
+}
+
+/* 收件箱行：一条发丝线分隔，动作紧跟标题，不再各自漂浮 */
+ul.inbox li {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--op-line);
+}
+
+ul.inbox li:last-child {
+  border-bottom: none;
+}
+
+.inbox-title {
+  font-weight: 600;
+}
+
+.inbox-meta {
+  display: block;
+  margin-top: 2px;
+}
+
+.inbox-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 4px;
+}
+
+/* 动作行：三个动作等重，默认的那个（写笔记）保持唯一强调 */
+.compose h2 {
+  margin: 0;
+}
+
+/*
+ * 窗口模式续：内容要占满高度、面板区自己滚动 —— 否则只有一行笔记时，窗口下半屏是一片死白，
+ * 看起来像没加载完。顺带把编辑区在宽窗口里给高一点。
+ */
+body[data-mode='window'] .popup {
+  height: 100%;
+  max-width: 720px;
+  padding: 16px 20px 20px;
+}
+
+body[data-mode='window'] .panes {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+body[data-mode='window'] .compose textarea.control {
+  min-height: 140px;
+}
+
+/*
+ * 风格收敛 pass 2 —— 目标：一眼看出层级，而不是每样东西同样用力。
+ *
+ * 1) 面板里的 h2 与页签说的是同一件事（收件箱/待处理/…），重复一次就是噪音：隐藏面板内的标题。
+ * 2) 动作行三个按钮等宽 —— 内容宽度决定大小，会让主按钮同时显得更大，两件事混在一起。
+ * 3) 列表用发丝分隔，标题一级、元信息降一级，动作贴在标题下面。
+ * 4) 窗口里把面板区做成一整张卡片（描边 + 圆角 + 内边距），而不是贴在页面边缘的一片内容。
+ * 只用既有颜色变量，不引入新色。
+ */
+.panes h2 {
+  display: none;
+}
+
+/* 动作行：等宽三格，间距一致 */
+/* Scoped to the action row by name: the first `.row` is the switch row, which must stay a plain row. */
+/*
+ * auto-fit, not a fixed 3: with one action the button spans the row (it is the panel's primary action),
+ * and if more actions come back they still share the row equally. A fixed count left one button in the
+ * first of three columns, which read as an accident.
+ */
+.row.actions {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.row.actions > * {
+  width: 100%;
+}
+
+/* 状态行：整块留白，别像一条贴边的横幅 */
+.notice {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 8px;
+}
+
+/* 页签：悬停有反馈，选中才是强调 */
+.tabs.list-tabs button {
+  cursor: pointer;
+}
+
+.tabs.list-tabs button:not([aria-selected='true']):not(:disabled):hover {
+  border-color: var(--op-line);
+  color: var(--op-fg);
+}
+
+/* 列表行：发丝分隔；标题一级，元信息二级，动作贴在下面 */
+ul.inbox li {
+  padding: 10px 2px;
+  border-bottom: 1px solid var(--op-line);
+}
+
+.inbox-title {
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.inbox-meta {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--op-muted);
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+
+body[data-mode='window'] {
+  overflow-x: hidden;
+}
+
+.inbox-actions {
+  display: flex;
+  gap: 12px;
+  margin-top: 6px;
+}
+
+/* 窗口：面板区是一张卡片，内容不再贴着窗口边缘 */
+body[data-mode='window'] .panes {
+  border: 1px solid var(--op-line);
+  border-radius: 10px;
+  padding: 12px 14px;
+}
+
+body[data-mode='window'] .popup {
+  gap: 12px;
+}
+
+/*
+ * 风格收敛 pass 3 —— 两件事：
+ * 1) 空白：.popup 上的 height:100% 在自动高度的 body 上等于没写，高度链断掉，卡片就只剩内容那么高。
+ *    改为窗口模式让 body 成为撑满视口的纵向 flex 容器，.popup 与 .panes 依次 flex:1，于是卡片占满
+ *    剩余高度并在内部滚动，空白区由此消失。
+ * 2) 呆板：整页只有白/灰/一个蓝。用 color-mix 从既有强调色与前景色派生浅色调（不引入新色，深浅主题
+ *    都成立）：应用底色带一点强调色、卡片有极浅的抬升、次级按钮有底色、列表行悬停有反馈、状态行左侧一
+ *    条色边。
+ */
+body[data-mode='window'] {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+  background: color-mix(in srgb, var(--op-accent) 5%, transparent);
+}
+
+body[data-mode='window'] .popup {
+  /*
+   * width 必须显式给：flex 子元素上的 margin:auto 会接管交叉轴，宽度于是变成 max-content（受 max-width
+   * 上限），比窗口还宽 —— 那正是上一轮的横向滚动条与右侧被裁。显式 width:100% + max-width 才是限宽居中。
+   */
+  width: 100%;
+  max-width: 720px;
+  margin: 0 auto;
+  flex: 1;
+  min-height: 0;
+  box-sizing: border-box;
+}
+
+body[data-mode='window'] .panes {
+  background: color-mix(in srgb, var(--op-fg) 2%, transparent);
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--op-fg) 8%, transparent);
+}
+
+/* 状态行左侧一条色边：一眼看出它是一条状态，而不是一段说明文字 */
+.notice {
+  border-left: 3px solid currentColor;
+}
+
+/* 次级按钮与页签：给一点底色，和白底区分开 */
+button:not(.primary):not(.link):not(.icon) {
+  background: color-mix(in srgb, var(--op-fg) 4%, transparent);
+}
+
+button:not(.primary):not(.link):not(.icon):hover {
+  background: color-mix(in srgb, var(--op-fg) 8%, transparent);
+}
+
+/* 列表行悬停：列表因此不再是一张静止的表 */
+ul.inbox li:hover {
+  background: color-mix(in srgb, var(--op-accent) 6%, transparent);
+}
+
+/*
+ * 风格收敛 pass 4 —— 弃用我自创的 color-mix 色调，改用项目既有的设计语言：
+ * 设置页早就是「灰底 + 白卡片」（--op-bg 灰页 + --op-panel 白板），popup 却缺 --op-panel 这个变量，
+ * 于是我用透明度混出了一个发灰发脏的中间色。这里补上同名变量，界面与设置页对齐。
+ *
+ * 同时修一处可读性 bug：pass 3 给次级按钮加的底色规则把页签也覆盖了，且与选中态同特异性、位置更靠后，
+ * 于是选中页签变成浅底白字。现在次级按钮规则显式排除 [role=tab]，选中态用强调色实心 + 反色文字。
+ */
+:root {
+  --op-panel: #ffffff;
+  --op-page: #f6f7f9;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --op-panel: #111827;
+    --op-page: #0b1220;
+  }
+}
+
+/* 次级按钮：白底 + 发丝描边（不是透明度混色） */
+button:not(.primary):not(.link):not(.icon):not([role='tab']) {
+  background: var(--op-panel);
+  border: 1px solid var(--op-line);
+  color: var(--op-fg);
+}
+
+button:not(.primary):not(.link):not(.icon):not([role='tab']):hover {
+  background: var(--op-page);
+}
+
+/* 选中页签：实心强调色 + 反色文字（两边都有对比度），并压过任何同特异性的底色规则 */
+.tabs.list-tabs button[role='tab'] {
+  background: transparent;
+  border-color: transparent;
+  color: var(--op-fg);
+}
+
+.tabs.list-tabs button[aria-selected='true'] {
+  background: var(--op-accent);
+  border-color: var(--op-accent);
+  color: var(--op-bg);
+  font-weight: 600;
+}
+
+/* 窗口：灰底 + 白卡片，与设置页同一套层级 */
+body[data-mode='window'] {
+  background: var(--op-page);
+}
+
+body[data-mode='window'] .panes {
+  background: var(--op-panel);
+  border: 1px solid var(--op-line);
+  border-radius: 10px;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 6%);
+}
+
+/* 可读性：元信息 11px 在中文里偏小 */
+.inbox-meta {
+  font-size: 12px;
 }

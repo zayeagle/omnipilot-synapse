@@ -954,8 +954,10 @@ function endpointAlreadyTrusted(baseUrl: string): boolean {
       null,
       LANG,
     );
-    autoLockInput.input.disabled = remembered;
-    autoLockNotice.hidden = !remembered;
+    // The idle lock can only exist while the vault needs a passphrase: with the lock off there is no
+    // secret to forget, so the field says so instead of looking useful.
+    autoLockInput.input.disabled = !remembered;
+    autoLockNotice.hidden = remembered;
   }
 function applyFormToInputs(): void {
     providerSelect.select.value = form.providerId;
@@ -1114,7 +1116,7 @@ function applyFormToInputs(): void {
         authMode: form.authMode,
         securityMode: form.securityMode,
         contentTierChosen: true,
-        unlockPolicy: rememberUnlock ? 'remember' : 'strict',
+        unlockPolicy: rememberUnlock ? 'remember' : 'keyless',
       },
     });
     if (!stored.ok) {
@@ -1694,7 +1696,9 @@ function applyFormToInputs(): void {
   }
 
   paintDefaults();
-  activate('providers');
+  // The popup's "go unlock" deep-links to #security; anything else opens the default tab. Without this the
+  // button would drop the user on an unrelated tab and make them hunt for the one it named.
+  activate(location.hash === '#security' ? 'security' : 'providers');
   void loadAll();
 }
 

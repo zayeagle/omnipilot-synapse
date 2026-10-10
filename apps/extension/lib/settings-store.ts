@@ -40,6 +40,8 @@ export const STORAGE_KEYS = {
   sessionKey: 'session:vaultKey',
   /** Non-secret policy plus the key it authorizes; one record so the two cannot drift apart. */
   unlockPolicy: 'local:unlockPolicy',
+  /** The managed secret for keyless mode; present only while the lock is off. */
+  vaultLocalSecret: 'local:vaultLocalSecret',
 } as const;
 
 export const SCHEMA_VERSION = 1;
@@ -126,13 +128,15 @@ export interface SecretPayload {
 /**
  * How the vault session survives a restart.
  *
- * `strict` keeps the derived key in memory only: a browser restart means re-entering the passphrase.
+ * `keyless` is the default: the vault is encrypted with a random secret the extension manages, so the
+ * user is never asked for anything. `strict` keeps the derived key in memory only: a restart means
+ * re-entering the passphrase.
  * `remember` exports that key to local storage so the next start adopts it, which lowers the gate from
  * knows-the-passphrase to can-read-this-browser-profile. The options page states that next to the
  * control, and `strict` stays one click away. Neither setting touches the crypto: the envelope, the
  * cached records and the capture queue stay sealed either way, so this is a gate, not a plaintext mode.
  */
-export type UnlockPolicy = 'strict' | 'remember';
+export type UnlockPolicy = 'keyless' | 'strict' | 'remember';
 
 /** The remembered key is a convenience, not a session: it may outlive an idle lock, not a profile. */
 export const REMEMBERED_TTL_MS = 30 * 24 * 60 * 60 * 1000;
@@ -426,16 +430,90 @@ export class SettingsStore {
     const stored = await this.area.get(STORAGE_KEYS.unlockPolicy);
     const raw = stored[STORAGE_KEYS.unlockPolicy];
     const policy = typeof raw === 'object' && raw !== null ? (raw as { policy?: unknown }).policy : undefined;
-    if (policy === 'strict' || policy === 'remember') return policy;
-    // The owner's chosen default. It is disclosed on the Security page next to the control, and `strict`
-    // is one click away - a default that lowers a gate has to be visible, not silent.
-    return 'remember';
+    if (policy === 'keyless' || policy === 'strict' || policy === 'remember') return policy;
+    // The owner's chosen default: no passphrase at all, so nothing asks. The Security page states what
+    // that costs (anyone who can read this browser profile can decrypt) and offers the lock in one click.
+    return 'keyless';
   }
 
   /** Switching policy also settles the key: strict must not leave a usable one behind. */
   async setUnlockPolicy(policy: UnlockPolicy): Promise<void> {
     await this.area.set({ [STORAGE_KEYS.unlockPolicy]: { policy } });
     if (policy === 'strict') await this.refreshPublicPrefs();
+  }
+
+  /** The random secret the extension manages for the user in keyless mode. */
+  private async localSecret(): Promise<string | null> {
+    const stored = await this.area.get(STORAGE_KEYS.vaultLocalSecret);
+    const raw = stored[STORAGE_KEYS.vaultLocalSecret];
+    return typeof raw === 'string' && raw.length > 0 ? raw : null;
+  }
+
+  private async createLocalSecret(): Promise<string> {
+    const provider = this.cryptoProvider;
+    if (!provider?.subtle || typeof provider.getRandomValues !== 'function') {
+      // No crypto provider is a programming error, not a user state: refuse rather than invent a key.
+      throw new VaultLockedError('vault: no crypto provider available');
+    }
+    const bytes = new Uint8Array(32);
+    provider.getRandomValues(bytes);
+    const secret = bytesToBase64(bytes);
+    await this.area.set({ [STORAGE_KEYS.vaultLocalSecret]: secret });
+    return secret;
+  }
+
+  /**
+   * Adopt the managed secret when the vault is keyless, so no read ever meets a locked vault.
+   *
+   * Keyless mode is a vault whose passphrase is a random local secret nobody types. That is what keeps the
+   * whole envelope machinery (and its crypto) untouched while the user never sees a prompt.
+   */
+  private async adoptLocalSecret(): Promise<void> {
+    if ((await this.getUnlockPolicy()) !== 'keyless') return;
+    if (!this.session || this.session.isUnlocked(this.now())) return;
+    const envelope = await this.getEnvelope();
+    if (envelope === null) return;
+    const secret = await this.localSecret();
+    if (secret === null) return;
+    try {
+      const key = await deriveKeyFromEnvelope(secret, envelope, {
+        crypto: this.cryptoProvider,
+        extractable: true,
+      });
+      this.session.setTtl(REMEMBERED_TTL_MS);
+      await this.session.adopt(key, this.now());
+      await this.refreshPublicPrefs();
+    } catch {
+      // A stored secret that no longer opens this envelope means it was re-keyed by hand: the passphrase
+      // path takes over, and the user is asked once - which is honest, not silent.
+    }
+  }
+
+  /** Create the keyless vault on first use, so a fresh install never meets a passphrase prompt. */
+  async ensureKeylessVault(): Promise<void> {
+    if ((await this.getUnlockPolicy()) !== 'keyless') return;
+    if ((await this.getEnvelope()) !== null) return;
+    const secret = (await this.localSecret()) ?? (await this.createLocalSecret());
+    const envelope = await createEnvelope(secret, JSON.stringify({ ...EMPTY_SECRETS }), {
+      crypto: this.cryptoProvider,
+      iterations: this.iterations,
+    });
+    await this.area.set({ [STORAGE_KEYS.secretVault]: envelope });
+    await this.adoptLocalSecret();
+  }
+
+  /** Re-key a passphrase vault to the managed secret: that is what turning the lock off means. */
+  async rekeyToLocal(): Promise<void> {
+    const secrets = await this.peekSecrets();
+    if (secrets === null) throw new VaultLockedError('vault: unlock before turning the lock off');
+    const secret = (await this.localSecret()) ?? (await this.createLocalSecret());
+    const envelope = await createEnvelope(secret, JSON.stringify(secrets), {
+      crypto: this.cryptoProvider,
+      iterations: this.iterations,
+    });
+    await this.area.set({ [STORAGE_KEYS.secretVault]: envelope });
+    await this.forgetRememberedKey();
+    await this.adoptLocalSecret();
   }
 
   /** The remembered key, or null. Never throws: a corrupt value is simply not a key. */
@@ -565,6 +643,8 @@ export class SettingsStore {
       iterations: this.iterations,
     });
     await this.area.set({ [STORAGE_KEYS.secretVault]: envelope });
+    // A human passphrase IS the lock: the managed secret must not survive as a second way in.
+    await this.area.remove([STORAGE_KEYS.vaultLocalSecret]);
     if (this.session) {
       const key = await deriveKeyFromEnvelope(passphrase, envelope, {
         crypto: this.cryptoProvider,
@@ -601,6 +681,8 @@ export class SettingsStore {
 
   /** Secrets, or throw `VaultLockedError`. There is no unencrypted path. */
   async getSecrets(): Promise<SecretPayload> {
+    // Keyless first: the managed secret makes the vault readable without asking anyone.
+    await this.adoptLocalSecret();
     if (!this.session) throw new VaultLockedError('vault: no session configured');
     const envelope = await this.getEnvelope();
     if (!envelope) throw new VaultLockedError('vault: not configured');

@@ -28,11 +28,13 @@ export const en: Dict = {
   'popup.duplicate': 'Already in Inbox',
   'popup.needSetup': 'Configure GitHub storage first',
   'popup.needCompanion': 'Install the companion to use SSH mode',
+  'popup.goUnlock': 'Unlock the vault',
   'popup.details': 'Details',
   'popup.writeNote': 'Take a note',
   'popup.noteTitle': 'Title (optional)',
   'popup.noteBody': 'Write here — the first line becomes the title if you leave one out',
-  'popup.noteSave': 'Save note',
+  'popup.noteSave': 'Add note',
+  'popup.noteSaveHint': 'Save (Ctrl/Cmd + Enter)',
   'popup.noteCancel': 'Cancel',
   'popup.noteEmpty': 'Nothing to save yet',
   'popup.archiveNote': 'Archive',
@@ -318,10 +320,11 @@ export const en: Dict = {
   'options.security.lock': 'Lock now',
   'options.security.transparentHint':
     'Transparent mode writes plain Markdown. Anyone with repository access — including the Git host — can read every capture.',
-  'options.security.remember': 'Remember the unlock on this device',
+  'options.security.remember': 'Require a passphrase (lock the vault)',
   'options.security.rememberHint':
-    'The vault key goes to browser storage, so you are not asked again after a restart - and anyone who can read this browser profile can decrypt your notes.',
-  'options.security.strictHint': 'The key stays in memory: a restart asks for the passphrase again.',
+    'On: the vault needs your passphrase, and it is remembered on this device so a restart does not ask again. Anyone who can read this browser profile can decrypt your notes.',
+  'options.security.strictHint':
+    'Off (default): no passphrase at all. The key is generated on this device and kept there, so nothing ever asks - and anyone who can read this browser profile can decrypt your notes.',
   'options.security.autoLockOff': 'Has no effect while the unlock is remembered; pick the strict behaviour for an idle lock.',
   'options.security.autoLock': 'Auto-lock after (minutes)',
   'options.security.vaultHint':
@@ -422,7 +425,8 @@ export const zh_CN: Dict = {
   'popup.writeNote': '记笔记',
   'popup.noteTitle': '标题（可留空）',
   'popup.noteBody': '在这里写 —— 不填标题时，正文第一行会当作标题',
-  'popup.noteSave': '保存笔记',
+  'popup.noteSave': '录入笔记',
+  'popup.noteSaveHint': '保存（Ctrl/⌘ + Enter）',
   'popup.noteCancel': '取消',
   'popup.noteEmpty': '还没有内容可保存',
   'popup.archiveNote': '归档',
@@ -434,6 +438,7 @@ export const zh_CN: Dict = {
   'popup.tab.search': '检索',
   'popup.tab.sync': '同步',
   'popup.detach': '浮动窗口',
+  'popup.goUnlock': '去解锁',
   'popup.blockedHint': '解锁保险库（或完成存储配置）后，这里会显示收件箱、待处理提案与复习队列。',
   'popup.inboxUnavailable': '收件箱暂时读不到',
   'popup.statusUnavailable': '状态暂时读不到',
@@ -694,10 +699,11 @@ export const zh_CN: Dict = {
   'options.security.lock': '立即锁定',
   'options.security.transparentHint':
     '透明仓模式写入明文 Markdown。任何能访问仓库的人（包括 Git 托管方）都能读到全部内容。',
-  'options.security.remember': '在本机记住解锁状态',
+  'options.security.remember': '启用口令锁（保险库需要口令）',
   'options.security.rememberHint':
-    '派生密钥会存进浏览器存储，重启后不再询问 —— 但任何能读到这个浏览器 profile 的人都可以解密你的笔记。',
-  'options.security.strictHint': '密钥只在内存里：重启后需要重新输入口令。',
+    '开启：保险库需要你的口令，且会在本机记住，重启不再询问；能读到这个浏览器 profile 的人可以解密。',
+  'options.security.strictHint':
+    '关闭（默认）：完全不设口令。密钥在本机随机生成并保存，所以永远不会询问 —— 能读到这个浏览器 profile 的人可以解密你的笔记。',
   'options.security.autoLockOff': '已记住解锁时此项无效；需要空闲自动锁定请选「严格」。',
   'options.security.autoLock': '自动锁定（分钟）',
   'options.security.vaultHint': '口令不会离开本机。一旦丢失，加密内容将无法恢复。',

@@ -114,7 +114,7 @@ export interface SecuritySettingsPayload {
    * How the vault session survives a restart. Travels with the other security choices, and lands in the
    * vault's own record rather than in `local:settings`.
    */
-  unlockPolicy?: 'strict' | 'remember';
+  unlockPolicy?: 'keyless' | 'strict' | 'remember';
   /**
    * Which credential mode remote operations use.
    *
@@ -790,8 +790,12 @@ export function validateSecuritySettings(payload: unknown): SecuritySettingsPayl
     out.autoLockMinutes = Math.min(720, Math.max(1, Math.round(minutes)));
   }
   if (raw['unlockPolicy'] !== undefined) {
-    if (raw['unlockPolicy'] !== 'strict' && raw['unlockPolicy'] !== 'remember') {
-      throw new MessageError('unlockPolicy must be strict | remember');
+    if (
+      raw['unlockPolicy'] !== 'keyless' &&
+      raw['unlockPolicy'] !== 'strict' &&
+      raw['unlockPolicy'] !== 'remember'
+    ) {
+      throw new MessageError('unlockPolicy must be keyless | strict | remember');
     }
     out.unlockPolicy = raw['unlockPolicy'];
   }

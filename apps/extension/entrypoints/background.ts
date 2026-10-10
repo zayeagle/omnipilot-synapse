@@ -22,6 +22,7 @@ import { detectLang, t } from '../lib/i18n';
 import { PAGE_CLIP_MESSAGE, type SenderLike } from '../lib/messages';
 import { createSessionSealer } from '../lib/security/sealer';
 import { singleFlight } from '../lib/single-flight';
+import { repairFloatingWindow } from '../lib/ui/floating-window';
 import { NativeClient, type NativePort } from '../lib/native/client';
 import { AiLedger, CaptureQueue } from '../lib/queues';
 import { SyncCache, createBestBackend } from '../lib/sync/cache';
@@ -216,12 +217,20 @@ export default defineBackground(() => {
   const bootstrap = async (): Promise<void> => {
     await refresh();
 
+    // Reloading the extension revokes its pages, which leaves the floating window showing the new tab page.
+    // Putting the console back belongs to startup, not to a click the user has to know about.
+    void repairFloatingWindow();
+
     // Keep the periodic alarm in step with the stored policy, then run the startup pull if the user
     // asked for one. Both are best-effort: a failure here must not stop the rest of startup.
     try {
       const snapshot = await settings.load();
       await triggers.schedule(snapshot.syncPolicy);
-      if (snapshot.syncPolicy.onStartup && session.isUnlocked()) {
+      if (snapshot.syncPolicy.onStartup) {
+        // Fire it even when the vault is locked. The sync then fails with a reason the status surface
+        // shows, and the popup offers the action that clears it. Gating here was SILENT, and silence is
+        // how an automatic feature looks broken: the status read "never synced" while every automatic
+        // run had been skipped without a word.
         void triggers.trigger('startup');
       }
     } catch (error) {

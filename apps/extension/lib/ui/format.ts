@@ -371,12 +371,32 @@ function normalizeInboxEntry(raw: Record<string, unknown>): InboxRow | null {
   return {
     id,
     path,
-    title: safeText(raw['title'], 120) || path || id,
+    title: displayTitle(safeText(raw['title'], 120) || path || id, path),
     url: isSafeExternalUrl(url) ? url : '',
     capturedAt: formatTimestamp(raw['capturedAt'] ?? raw['captured_at']),
   };
 }
 
+
+/**
+ * The title to show for a row whose title is really a file name.
+ *
+ * The index deliberately carries no title (in the vault tier a title would leak content), so the worker
+ * falls back to the file name, which is `slug(title)-<id>.md`. Showing that verbatim is a machine name in
+ * the middle of a human list, so the slug is turned back into words. The full path stays visible in the
+ * row's meta line, so nothing is hidden by this.
+ */
+export function displayTitle(title: string, path: string): string {
+  const trimmed = title.trim();
+  if (trimmed.length === 0 || !trimmed.endsWith('.md')) return trimmed;
+  // Only when the title IS the file name: a real title that happens to end in .md is left alone.
+  const fileName = path.split('/').pop() ?? '';
+  if (fileName.length > 0 && trimmed !== fileName) return trimmed;
+  const withoutExtension = trimmed.slice(0, -3);
+  const withoutId = withoutExtension.replace(/-[a-z0-9]{6,}$/iu, '');
+  const words = withoutId.replace(/-+/gu, ' ').trim();
+  return words.length > 0 ? words : withoutExtension;
+}
 /** The popup's recent-Inbox list: capped, junk-tolerant and never longer than `limit`. */
 export function inboxRows(entries: unknown, limit = 5): InboxRow[] {
   if (!Array.isArray(entries)) return [];
@@ -472,7 +492,7 @@ export interface VaultInfo {
   configured: boolean;
   unlocked: boolean;
   /** How the session survives a restart; `strict` when the worker did not say. */
-  unlockPolicy: 'strict' | 'remember';
+  unlockPolicy: 'keyless' | 'strict' | 'remember';
   expiresAt: number | null;
   remainingMs: number;
 }
@@ -495,7 +515,10 @@ export function normalizeVaultInfo(value: unknown): VaultInfo {
   return {
     configured: raw['configured'] === true,
     unlocked: raw['unlocked'] === true,
-    unlockPolicy: raw['unlockPolicy'] === 'remember' ? 'remember' : 'strict',
+    unlockPolicy:
+      raw['unlockPolicy'] === 'remember' || raw['unlockPolicy'] === 'keyless'
+        ? raw['unlockPolicy']
+        : 'strict',
     expiresAt: typeof expiresAtRaw === 'number' && Number.isFinite(expiresAtRaw) ? expiresAtRaw : null,
     remainingMs:
       typeof remainingRaw === 'number' && Number.isFinite(remainingRaw) && remainingRaw > 0

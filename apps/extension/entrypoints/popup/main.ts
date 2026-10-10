@@ -33,10 +33,10 @@ import {
   el,
   toastArea,
 } from '../../lib/ui/dom';
+import { focusOrRepairFloatingWindow, readFloatingWindowId, rememberFloatingWindowId } from '../../lib/ui/floating-window';
 import {
   describeError,
   distillPayloadFor,
-  firstInjectionResult,
   inboxRows,
   isSafeExternalUrl,
   normalizeStatusPayload,
@@ -44,7 +44,6 @@ import {
   normalizeSyncStatus,
   searchResultRows,
   noteCapturePayload,
-  selectionCapturePayload,
   statusPanel,
   type InboxRow,
   type SearchResultRow,
@@ -91,14 +90,6 @@ async function send<T = unknown>(request: ExtensionRequest): Promise<ExtensionRe
   }
 }
 
-/** Read the selection out of the active tab. Serialised into the page, so it closes over nothing. */
-function readPageSelection(): { text: string; lang: string } {
-  const selection = window.getSelection();
-  return {
-    text: selection ? selection.toString() : '',
-    lang: document.documentElement ? document.documentElement.lang : '',
-  };
-}
 
 async function openExternal(href: string): Promise<void> {
   if (!isSafeExternalUrl(href)) return;
@@ -172,7 +163,12 @@ function main(): void {
   settingsButton.title = t('popup.openOptions', null, LANG);
   settingsButton.appendChild(gearIcon());
   const WINDOW_MODE = new URLSearchParams(location.search).get('mode') === 'window';
-  if (WINDOW_MODE) document.body.dataset['mode'] = 'window';
+  if (WINDOW_MODE) {
+    document.body.dataset['mode'] = 'window';
+    // The window's own title bar carries the product name; repeating it inside is noise, and the space it
+    // takes belongs to the content.
+    headerText.hidden = true;
+  }
 
   // Both destinations sit in the corner people look for them, at the same weight: window, then settings.
   // The window action hides itself inside the window it would open.
@@ -193,22 +189,21 @@ function main(): void {
   const refreshButton = button(t('popup.refresh', null, LANG));
   const switchRow = el('div', 'row');
   switchRow.append(switchLabel, el('span', 'spacer'), refreshButton);
+  if (WINDOW_MODE) {
+    // No title bar duplication and no orphaned icon row: in a window the gear joins the switch row, where
+    // the other one-off actions already are.
+    header.hidden = true;
+    switchRow.appendChild(settingsButton);
+  }
 
-  /* clip actions */
-  const clipPageButton = button(t('popup.clipPage', null, LANG));
-  const clipSelectionButton = button(t('popup.clipSelection', null, LANG));
-  const actions = el('div', 'row');
   /*
-   * 记笔记: the protocol has carried mode note from the start with no surface that could send it, so
-   * the only way in was a web page. The panel stays collapsed until asked for: a capture surface that
-   * pushes a form at the user would break the zero-pressure rule.
+   * One action lives here: 记笔记. Clipping is a page-level gesture (select text -> the bubble), so the
+   * panel does not need two clip buttons that only work when a tab happens to allow injection.
    */
-  // Emphasis follows the MODE, not a fixed default: the row is a small segmented control, and the blue
-  // belongs to whichever action the console is currently in (see `setActionMode`). Painting 记笔记 blue
-  // for good made it look chosen while nothing was open, and made the other two look unavailable.
-  const noteButton = button(t('popup.writeNote', null, LANG));
-  actions.append(noteButton, clipPageButton, clipSelectionButton);
-
+  /*
+   * 写笔记 is the panel's opening surface, not something to unlock first: an input that is already there
+   * needs no click, and a button whose only job was to reveal it was one control too many.
+   */
   const notePanel = el('section', 'compose');
   const noteTitleInput = el('input', 'control');
   noteTitleInput.type = 'text';
@@ -217,23 +212,35 @@ function main(): void {
   noteTextArea.rows = 6;
   noteTextArea.placeholder = t('popup.noteBody', null, LANG);
   const noteSaveButton = button(t('popup.noteSave', null, LANG), 'primary');
-  const noteCancelButton = button(t('popup.noteCancel', null, LANG));
+  noteSaveButton.title = t('popup.noteSaveHint', null, LANG);
+  // The composer's action belongs at the end of the form, not floating under the first field.
   const noteButtons = el('div', 'row');
-  noteButtons.append(noteSaveButton, el('span', 'spacer'), noteCancelButton);
+  noteButtons.append(el('span', 'spacer'), noteSaveButton);
   notePanel.append(
     el('h2', undefined, t('popup.writeNote', null, LANG)),
     noteTitleInput,
     noteTextArea,
     noteButtons,
   );
-  notePanel.hidden = true;
+  // Visible from the start: the composer IS the panel's first line, not a state to enter.
 
   /* readiness notice */
   const notice = el('p', 'notice');
   notice.dataset['kind'] = 'blocked';
   /** Shown INSTEAD of the data sections while they cannot be read: one line, one action. */
-  const blockedHint = el('p', 'hint', t('popup.blockedHint', null, LANG));
+  /*
+   * A blocked surface owes the user a reason AND the action that clears it. The sentence alone was a dead
+   * end: the state this popup hits most often - a locked vault - had no button anywhere on screen.
+   */
+  const blockedHint = el('div', 'blocked');
   blockedHint.hidden = true;
+  const blockedText = el('p', 'hint', t('popup.blockedHint', null, LANG));
+  const unlockButton = button(t('popup.goUnlock', null, LANG));
+  unlockButton.hidden = true;
+  unlockButton.addEventListener('click', () => {
+    void browser.tabs.create({ url: browser.runtime.getURL('/options.html#security') });
+  });
+  blockedHint.append(blockedText, unlockButton);
 
   /* status rows */
   const statusList = el('dl', 'status');
@@ -365,12 +372,23 @@ function main(): void {
    * which is the behaviour asked for. The same page renders in both, so there is one console, not two.
    */
   async function openFloatingWindow(): Promise<void> {
-    await browser.windows.create({
-      url: browser.runtime.getURL('/popup.html?mode=window'),
-      type: 'popup',
-      width: 460,
-      height: 720,
-    });
+    const url = browser.runtime.getURL('/popup.html?mode=window');
+    const existing = await readFloatingWindowId();
+    if (existing !== null) {
+      try {
+        // Reuse the window we opened before, repairing its page if the extension was reloaded under it.
+        if (await focusOrRepairFloatingWindow(existing)) {
+          window.close();
+          return;
+        }
+      } catch {
+        // Gone (closed by hand, or the id is stale): fall through and make a new one.
+      }
+    }
+    const created = await browser.windows.create({ url, type: 'popup', width: 460, height: 720 });
+    if (typeof created?.id === 'number') {
+      await rememberFloatingWindowId(created.id);
+    }
     // The toolbar popup has handed over; leaving it open would show two consoles at once.
     window.close();
   }
@@ -384,10 +402,10 @@ function main(): void {
   app.append(
     header,
     switchRow,
-    actions,
-    notePanel,
+    // Status before actions: the line answers can I capture, and it belongs where it is read first.
     notice,
     blockedHint,
+    notePanel,
     statusDetails,
     listTabBar,
     listPanesRoot,
@@ -397,6 +415,12 @@ function main(): void {
   /* --------------------------------- state -------------------------------- */
 
   let canClip = false;
+  /**
+   * Whether the repository can be WRITTEN to, which is what a note needs. Deliberately not `canClip`: that
+   * also carries the 启用捕获 master switch, and writing a note is not a capture - being unable to save one
+   * because automatic capture is off was the button simply not working.
+   */
+  let canWrite = false;
   let canSync = false;
   let busy = false;
   let searchBusy = false;
@@ -407,26 +431,7 @@ function main(): void {
   /** The public preferences from the last `status.get`, for the search result URLs. */
   let lastPrefs = normalizeStatusPayload(null).prefs;
 
-  /** Which action the console is currently in. `none` at rest: nothing is being done yet. */
-  type ActionMode = 'none' | 'note' | 'page' | 'selection';
-  let actionMode: ActionMode = 'none';
-
-  /**
-   * The action row is a segmented control: exactly one entry carries the emphasis, and the area below
-   * follows it.
-   *
-   * `note` swaps in the composer, which is that action's own surface. The two clip modes keep the status
-   * line and the lists: a clip has no form to show, and its progress and outcome already appear there
-   * ("处理中…" while it runs, then the toast and the Inbox row). The point of the emphasis is that the
-   * console answers "what am I doing" in one place instead of decorating a default.
-   */
-  function setActionMode(next: ActionMode): void {
-    actionMode = next;
-    noteButton.className = next === 'note' ? 'primary' : '';
-    clipPageButton.className = next === 'page' ? 'primary' : '';
-    clipSelectionButton.className = next === 'selection' ? 'primary' : '';
-    notePanel.hidden = next !== 'note';
-  }
+  /** Opening the composer is the whole of the action row's state now: there is one action. */
 
   /**
    * The readiness line as `renderStatus` last left it. `setBusy` overlays the in-flight state on top
@@ -446,9 +451,7 @@ function main(): void {
     // The in-flight state belongs to the status line, never to a button caption: a button that renames
     // itself reads as a different button, and the line below it keeps its stale "Ready to clip".
     paintNotice();
-    clipPageButton.disabled = next || !canClip;
-    noteButton.disabled = next || !canClip;
-    clipSelectionButton.disabled = next || !canClip;
+    noteSaveButton.disabled = next || !canWrite;
     refreshButton.disabled = next;
     syncNowButton.disabled = next || !canSync;
     searchButton.disabled = next || searchBusy;
@@ -478,6 +481,7 @@ function main(): void {
 
   function renderUnavailable(): void {
     canClip = false;
+    canWrite = false;
     enabledInput.disabled = true;
     for (const value of statusValues.values()) {
       value.textContent = '—';
@@ -495,6 +499,7 @@ function main(): void {
     for (const id of ['inbox', 'pending', 'review', 'search']) setTabAvailable(id, false);
     listPanesRoot.hidden = true;
     blockedHint.hidden = false;
+    unlockButton.hidden = true;
     setBusy(busy);
   }
 
@@ -520,11 +525,21 @@ function main(): void {
     // A blocked surface must not stack dead ends: the Inbox, the proposals and the review queue all read
     // the repository, so they follow the state they depend on instead of each reporting its own failure.
     const readable = canReadRepository(status.prefs);
+    /*
+     * With capture ON, `canClip` is already the right gate (readiness, the public-repo acknowledgement and the
+     * switch itself - which is on). With capture OFF, only readiness matters: writing a note is not a capture,
+     * and being unable to save one because automatic capture is off was the button simply not working. The one
+     * residual case (capture off AND an unacknowledged public repo) is answered by the worker with a readable
+     * refusal, which the status line already knows how to render.
+     */
+    canWrite = status.prefs.enabled === false ? readable : canClip;
     // The tabs stay visible so it is clear what is there, but nothing is switchable until it can be read,
     // and the pane area goes away entirely - one line explains why, instead of four empty panes.
     for (const id of ['inbox', 'pending', 'review', 'search']) setTabAvailable(id, readable);
     listPanesRoot.hidden = !readable;
     blockedHint.hidden = readable;
+    // Only a locked vault gets the button: it is the one blocked state the user can clear unaided.
+    unlockButton.hidden = readable || !status.prefs.vaultLocked;
     renderSyncPanel();
     readinessNotice = {
       text: panel.canClip
@@ -923,70 +938,13 @@ function main(): void {
     );
   }
 
-  async function clipPage(): Promise<void> {
-    if (busy || !canClip) return;
-    setBusy(true);
-    setActionMode('page');
-    const response = await send<CaptureResultData>({ type: 'capture.page', payload: {} });
-    reportCapture(response);
-    await refreshInbox();
-    setBusy(false);
-  }
-
-  async function clipSelection(): Promise<void> {
-    if (busy || !canClip) return;
-    setBusy(true);
-    try {
-      const tabs = await browser.tabs.query({ active: true, currentWindow: true });
-      const tab = tabs[0];
-      const tabId = tab?.id;
-      if (typeof tabId !== 'number') {
-        toast.show(t('popup.selectionUnavailable', null, LANG), 'error');
-        return;
-      }
-
-      const injected: unknown = await browser.scripting.executeScript({
-        target: { tabId },
-        func: readPageSelection,
-      });
-      const picked = firstInjectionResult(injected);
-      const fields = typeof picked === 'object' && picked !== null ? (picked as Record<string, unknown>) : {};
-      const pickedLang = fields['lang'];
-      const payload: CaptureRequestPayload | null = selectionCapturePayload(
-        tab?.url ?? '',
-        tab?.title ?? '',
-        fields['text'],
-        typeof pickedLang === 'string' ? pickedLang : undefined,
-      );
-      if (!payload) {
-        toast.show(t('popup.needSelection', null, LANG), 'info');
-        return;
-      }
-      // The guards have all passed, so this really is the action being taken: select it before the
-      // request, not before the guards, or an unusable page would light the button up anyway.
-      setActionMode('selection');
-      const response = await send<CaptureResultData>({ type: 'capture.request', payload });
-      reportCapture(response);
-      await refreshInbox();
-    } catch {
-      // No host access (chrome://, the web store, a PDF viewer…) — the in-page bubble still works.
-      toast.show(t('popup.selectionUnavailable', null, LANG), 'error');
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  function setNoteOpen(open: boolean): void {
-    setActionMode(open ? 'note' : 'none');
-    if (open) noteTitleInput.focus();
-  }
 
   /**
    * Manual entry: compose a note and send it down the SAME capture path as a clip, so the commit, the
    * index, the search shards and the vault policy all behave identically.
    */
   async function saveNote(): Promise<void> {
-    if (busy || !canClip) return;
+    if (busy || !canWrite) return;
     const tabs = await browser.tabs.query({ active: true, currentWindow: true });
     const payload = noteCapturePayload(noteTitleInput.value, noteTextArea.value, tabs[0]?.url);
     if (!payload) {
@@ -1002,15 +960,19 @@ function main(): void {
       // would suggest it was lost.
       noteTitleInput.value = '';
       noteTextArea.value = '';
-      setNoteOpen(false);
       await refreshInbox();
     } finally {
       setBusy(false);
     }
   }
 
-  noteButton.addEventListener('click', () => setNoteOpen(notePanel.hidden));
-  noteCancelButton.addEventListener('click', () => setNoteOpen(false));
+  // Writing does not want a mouse: Ctrl/Cmd+Enter saves, which is what the tooltip on the button says.
+  noteTextArea.addEventListener('keydown', (event) => {
+    if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
+      event.preventDefault();
+      void saveNote();
+    }
+  });
   noteSaveButton.addEventListener('click', () => void saveNote());
 
   /** Archive (never delete) a note: it leaves the Inbox, and the body stays recoverable under archive/. */
@@ -1134,8 +1096,7 @@ function main(): void {
   searchInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') void search();
   });
-  clipPageButton.addEventListener('click', () => void clipPage());
-  clipSelectionButton.addEventListener('click', () => void clipSelection());
+
   settingsButton.addEventListener('click', () => void browser.runtime.openOptionsPage());
 
   renderUnavailable();

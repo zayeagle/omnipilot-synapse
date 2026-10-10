@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { MIN_ITERATIONS } from './security/crypto-key';
 import { MemoryStorageArea, STORAGE_KEYS, SettingsStore } from './settings-store';
 
 /**
@@ -10,9 +11,10 @@ import { MemoryStorageArea, STORAGE_KEYS, SettingsStore } from './settings-store
  * than keeping a way back in.
  */
 describe('unlock policy (R8 UNIT)', () => {
-  it('TC-R8-U04 defaults to remember, and keeps the policy next to the key it authorizes', async () => {
+  // A6: the default moved from `remember` to `keyless` on the owner's instruction (no passphrase at all).
+  it('TC-R8-U04 defaults to keyless, and keeps the policy next to the key it authorizes', async () => {
     const store = new SettingsStore({ area: new MemoryStorageArea(), now: () => 0, iterations: 1 });
-    expect(await store.getUnlockPolicy()).toBe('remember');
+    expect(await store.getUnlockPolicy()).toBe('keyless');
 
     await store.setUnlockPolicy('strict');
     expect(await store.getUnlockPolicy()).toBe('strict');
@@ -33,6 +35,29 @@ describe('unlock policy (R8 UNIT)', () => {
     const stored = await area.get(STORAGE_KEYS.unlockPolicy);
     expect(stored[STORAGE_KEYS.unlockPolicy]).toEqual({ policy: 'strict' });
     expect(await store.restoreRememberedKey()).toBe(false);
+  });
+
+  it('TC-R8-U07 a fresh install is keyless: the vault appears on demand and stores a managed secret', async () => {
+    const area = new MemoryStorageArea();
+    // The KDF floor is a security guard, so the test uses it rather than lowering it.
+    const store = new SettingsStore({
+      area,
+      now: () => 0,
+      iterations: MIN_ITERATIONS,
+      crypto: globalThis.crypto,
+    });
+    expect(await store.getEnvelope()).toBeNull();
+
+    await store.ensureKeylessVault();
+    // Configured, with no passphrase anywhere: that is what "never asks" is made of.
+    expect(await store.getEnvelope()).not.toBeNull();
+    expect((await store.vaultStatus()).configured).toBe(true);
+    const stored = await area.get(STORAGE_KEYS.vaultLocalSecret);
+    expect(typeof stored[STORAGE_KEYS.vaultLocalSecret]).toBe('string');
+    // A second call is a no-op rather than a second vault.
+    const first = await store.getEnvelope();
+    await store.ensureKeylessVault();
+    expect(await store.getEnvelope()).toEqual(first);
   });
 
   it('TC-R8-U06 remembering the live session is a no-op without one, and never throws', async () => {
