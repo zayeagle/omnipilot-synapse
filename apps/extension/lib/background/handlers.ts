@@ -56,7 +56,7 @@ import { planConflictResolution } from '../sync/conflict';
 import { createRemoteShardStore } from '../sync/shard-store';
 import type { SyncTriggers } from '../sync/triggers';
 import { SearchIndex } from '../search/index';
-import { documentOf } from '../search/postings';
+import { documentOf, mergeDocuments } from '../search/postings';
 import type { SyncReason } from '../messages';
 import {
   validateCapturePageRequest,
@@ -415,7 +415,20 @@ function buildSearchIndex(
       const cached = (await cache.all())
         .filter((entry) => entry.record.kind !== 'review')
         .map((entry) => documentOf(entry.record, entry.path));
-      if (cached.length > 0) return cached;
+      if (cached.length > 0) {
+        /*
+         * The manifest FILLS THE GAPS instead of waiting for the cache to be empty. A cached record whose body
+         * is empty still has postings, and `search()` drops a hit it cannot describe with a document - so the
+         * note matched and was then hidden, which is exactly "search finds nothing while the inbox shows the
+         * note". The cache still wins wherever it has the record, so titles and snippets are unaffected.
+         */
+        try {
+          return mergeDocuments(cached, Object.values((await remote.readIndex()).items));
+        } catch {
+          // Best effort: the cache alone still answers for the records it holds.
+          return cached;
+        }
+      }
       /*
        * A cold record cache must not read as "no results". The query needs a document per hit only to show
        * a title and a snippet; the manifest already knows which records exist and where, so falling back to

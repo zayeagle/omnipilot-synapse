@@ -160,6 +160,39 @@ function compact(texts: ReadonlyArray<string | undefined>): string[] {
  * A card's `scenarios`/`counter_examples` are indexed under `body` — they are secondary prose, and
  * the field list is fixed by the design.
  */
+export interface ManifestLikeItem {
+  id: string;
+  kind: SearchDocument['kind'];
+  path: string;
+  updated_at?: string;
+}
+
+/**
+ * The document table a query answers from: the cache's documents, with the manifest filling the gaps.
+ *
+ * Every hit has to be described by a document, so a record the cache holds WITHOUT usable text (an older
+ * capture, a partial write) used to hide its own hits: the postings said it matched and the table had nothing
+ * to show. The cache still wins wherever it has the record, so titles and snippets are unaffected.
+ */
+export function mergeDocuments(
+  cached: readonly SearchDocument[],
+  manifest: readonly ManifestLikeItem[],
+): SearchDocument[] {
+  const merged = new Map(cached.map((document) => [document.id, document] as const));
+  for (const item of manifest) {
+    if (merged.has(item.id)) continue;
+    merged.set(item.id, {
+      id: item.id,
+      kind: item.kind,
+      path: item.path,
+      title: '',
+      fields: {},
+      updated_at: typeof item.updated_at === 'string' ? item.updated_at : '',
+    });
+  }
+  return [...merged.values()];
+}
+
 export function documentOf(record: CkfRecord, path: string): SearchDocument {
   switch (record.kind) {
     case 'source':
