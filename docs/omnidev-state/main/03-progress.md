@@ -417,3 +417,21 @@ A6 断言更新：format.test.ts 的 TC-F5-U03 原断言 `normalizeSyncResult('n
 （实测输出 MISSING-INDEX {indexMissing:true,needsRebuild:false,hits:0}）。
 
 仍待：把 indexMissing 渲染成界面提示（「索引尚未建立 — 请在设置里重建索引」，双语键）。
+
+### 信任端点的两个缺陷（2026-10-10，定位；一半已修）
+
+业主报告：设置 → AI 授权 的「我信任该端点」勾选**没有持久化**（重载后又变空）。
+
+1. **worker 完全忽略同意标记（已修）**：handlers.ts 的 settings.provider 只要 payload.baseUrl 非空就
+   把该主机写入 trustedHosts，**从不检查 payload.trustAcknowledged** ⇒ 勾没勾都信任，违反「AI 出网默认关闭、
+   逐条授权」。现改为 `if (payload.baseUrl && payload.trustAcknowledged === true)`。该标记本来一路都在
+   （messages.ts 的 ProviderSettingsPayload、validator、format.ts 的 formToProviderPayload），只有最后一跳没用。
+2. **勾选后主机仍未写入（未修，已复现）**：夹具里带 trustAcknowledged=true 保存后，settings.export 的
+   ai.trustedHosts 仍为空 ⇒ 回填 endpointAlreadyTrusted() 为 false ⇒ 勾选看起来无效。这正是业主看到的
+   「没有持久化」。下一步：沿 settings.provider 的 patch → settings-store.patch → export 三段查该数组为何丢元素。
+
+过程记录（诚实）：我为这条写的 INT 用例在替换时误吞了夹具的 send / configuredWorker 助手，导致文件无法编译；
+已用 git checkout HEAD -- lib/background/handlers.int.test.ts（注意工作目录是 apps/extension，第一次路径写错、
+checkout 静默未生效）恢复，套件回到绿。那条守卫用例待缺陷修好后重建。
+
+样式：选项页搜索区的「请输入搜索内容」在尚未搜索时是孤儿提示，已改为初始隐藏；搜索输入框与按钮的垂直对齐仍待一轮 CSS。

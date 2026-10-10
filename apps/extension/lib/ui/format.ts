@@ -791,7 +791,14 @@ export function formToGithubPayload(form: GithubForm): GithubSettingsPayload {
 }
 
 export function trustedHostsOf(value: unknown): string[] {
-  const ai = asRecord(asRecord(value)?.["ai"]);
+  /*
+   * `settings.export` nests the settings under `settings` (`{ exportedAt, settings, vault, … }`), while a bare
+   * settings object puts them at the top. Reading only the top level meant this ALWAYS returned [] against the
+   * real export, so the trust checkbox rendered unchecked after every reload and the tick looked like it had
+   * never been saved - the host was stored all along. Both shapes are accepted here.
+   */
+  const root = asRecord(value);
+  const ai = asRecord(asRecord(root?.["settings"])?.["ai"]) ?? asRecord(root?.["ai"]);
   const hosts = ai?.["trustedHosts"];
   if (!Array.isArray(hosts)) return [];
   return hosts.filter((host): host is string => typeof host === "string" && host.length > 0);

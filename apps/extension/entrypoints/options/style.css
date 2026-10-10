@@ -375,3 +375,21 @@ pre.export[hidden] {
   margin-left: 8px;
   padding: 1px 8px;
 }
+
+/*
+ * 索引与检索: the field and its button are one control. They were laid out by the generic .row rules, so the
+ * button sat on a different baseline than the input; here the field takes the room and both share a baseline.
+ */
+.search-row {
+  align-items: stretch;
+  gap: 8px;
+}
+
+.search-row > .control {
+  flex: 1;
+  min-width: 0;
+}
+
+.search-row > button {
+  white-space: nowrap;
+}

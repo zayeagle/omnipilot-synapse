@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHandlers, scrubHandlerError, type BackgroundContext } from './handlers';
 import { MessageRouter, createRouterOptions } from './router';
 import { PAGE_CLIP_MESSAGE, type ExtensionResponse } from '../messages';
+import { trustedHostsOf } from '../ui/format';
 import { SyncCache, createMemoryBackend } from '../sync/cache';
 import { shardKey, tokenizeForSearch } from '../search/tokenize';
 import { AiLedger, CaptureQueue } from '../queues';
@@ -1074,5 +1075,45 @@ describe('background worker surface (F8 INT)', () => {
 
     expect(worker.calls.length).toBe(before);
     expect(PAGE_CLIP_MESSAGE).toBe('page.clip');
+  });
+});
+
+/**
+ * F11 - trust is granted by the consent flag, and read back from the shape the export really uses.
+ *
+ * Two defects lived here. The worker added the host whenever a base URL was present, ignoring the tick it was
+ * sent; and the reader looked for ai.trustedHosts while settings.export nests it under settings, so the box
+ * came back empty after every reload and the tick looked like it had never been saved.
+ */
+describe('AI endpoint trust (F11 INT)', () => {
+  it('TC-F11-I05 trusts a custom endpoint once the consent flag is set, and reads it back', async () => {
+    const worker = await configuredWorker();
+    const saved = await send(worker, 'settings.provider', {
+      providerId: 'custom',
+      model: 'm',
+      baseUrl: 'https://ai-kas.kso.net/codeplan/v1',
+      trustAcknowledged: true,
+    });
+    expect(saved.ok).toBe(true);
+    const exported = await send(worker, 'settings.export');
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) throw new Error('unreachable');
+    const hosts = trustedHostsOf(exported.data);
+    console.log('TRUST-WITH-FLAG ' + JSON.stringify({ hosts }));
+    expect(hosts).toContain('ai-kas.kso.net');
+  });
+
+  it('TC-F11-I06 does not trust a custom endpoint when the flag is absent', async () => {
+    const worker = await configuredWorker();
+    const saved = await send(worker, 'settings.provider', {
+      providerId: 'custom',
+      model: 'm',
+      baseUrl: 'https://other.example.net/v1',
+    });
+    expect(saved.ok).toBe(true);
+    const exported = await send(worker, 'settings.export');
+    expect(exported.ok).toBe(true);
+    if (!exported.ok) throw new Error('unreachable');
+    expect(trustedHostsOf(exported.data)).not.toContain('other.example.net');
   });
 });

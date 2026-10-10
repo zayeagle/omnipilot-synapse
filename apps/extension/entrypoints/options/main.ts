@@ -473,10 +473,14 @@ function main(): void {
     lang: LANG,
   });
   const searchButton = button(t('options.search.button', null, LANG));
-  const searchRow = el('div', 'row');
+  // Named so the stylesheet can pair the field and the button without restyling every .row in the page.
+  const searchRow = el('div', 'row search-row');
   searchRow.append(searchInput.root, searchButton);
   const rebuildButton = button(t('options.search.rebuild', null, LANG));
   const searchMessage = el('p', 'hint');
+  // Nothing has been asked yet, so there is nothing to say: the line used to appear under the button
+  // before the first search as a stray empty-state.
+  searchMessage.hidden = true;
   const searchList = el('ul', 'inbox');
   const searchBlock = el('div', 'card-body');
   searchBlock.append(searchRow, rebuildButton, searchMessage, searchList);

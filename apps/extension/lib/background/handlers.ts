@@ -701,7 +701,13 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       const payload = validateProviderSettings(request.payload);
       const current = await context.settings.load();
       const trustedHosts = new Set(current.ai.trustedHosts);
-      if (payload.baseUrl) {
+      /*
+       * Trust is granted by the CONSENT FLAG, never by the mere presence of a base URL. This used to add the
+       * host whenever the field was non-empty, which quietly made the sender of every custom endpoint trusted
+       * whether or not the user had ticked the box - the one thing the product rules are explicit about (AI
+       * egress is off by default and granted one endpoint at a time).
+       */
+      if (payload.baseUrl && payload.trustAcknowledged === true) {
         try {
           trustedHosts.add(new URL(payload.baseUrl).host);
         } catch {
