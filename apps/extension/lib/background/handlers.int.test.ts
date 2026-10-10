@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import { createHandlers, scrubHandlerError, type BackgroundContext } from './handlers';
 import { MessageRouter, createRouterOptions } from './router';
 import { PAGE_CLIP_MESSAGE, type ExtensionResponse } from '../messages';
+import { newSourceItem } from '../core/ckf';
+import { createTransparentCodec } from '../store/codec';
 import { trustedHostsOf } from '../ui/format';
 import { SyncCache, createMemoryBackend } from '../sync/cache';
 import { shardKey, tokenizeForSearch } from '../search/tokenize';
@@ -1115,5 +1117,41 @@ describe('AI endpoint trust (F11 INT)', () => {
     expect(exported.ok).toBe(true);
     if (!exported.ok) throw new Error('unreachable');
     expect(trustedHostsOf(exported.data)).not.toContain('other.example.net');
+  });
+});
+
+/**
+ * Reproduces the owner's pipeline: the Chinese note is already IN the repository (his captures happened
+ * earlier, so the text comes back through a pull), then sync, rebuild and search for a word in the body.
+ */
+describe('Chinese record pulled from the repository (F16 INT)', () => {
+  it('TC-F16-I08 finds a pulled Chinese note by a word in its body', async () => {
+    const worker = await configuredWorker();
+    const codec = createTransparentCodec({});
+    const item = newSourceItem({
+      id: 'src00009',
+      url: 'https://example.com/cn',
+      title: '能力可以提升信任',
+      body: '能力可以提升我们对自己直觉的信任',
+      capturedAt: new Date(0),
+    });
+    const encoded = await codec.encodeRecord(item);
+    worker.files.set(encoded.path, encoded.content);
+    worker.files.set('index.json', JSON.stringify({ schema: 1, items: { [item.id]: encoded.index } }));
+
+    const synced = await send(worker, 'sync.now', { reason: 'manual' });
+    const rebuilt = await send(worker, 'search.rebuild');
+    const found = await send(worker, 'search.query', { text: '能力' });
+    const hits = found.ok ? ((found.data as { hits?: unknown[] }).hits?.length ?? 0) : null;
+    console.log('CN-PULL ' + JSON.stringify({
+      outcome: synced.ok ? (synced.data as { report?: { outcome?: string } }).report?.outcome : null,
+      rebuilt: rebuilt.ok ? rebuilt.data : null,
+      hits,
+      shardFiles: [...worker.files.keys()].filter((key) => key.startsWith('search/')).length,
+      recordPath: encoded.path,
+    }));
+    expect(synced.ok).toBe(true);
+    expect(rebuilt.ok).toBe(true);
+    expect(hits ?? 0).toBeGreaterThan(0);
   });
 });
