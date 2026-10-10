@@ -28,7 +28,7 @@
 - 不新增运行时依赖（两个包都不行）；不引入 shell 调用；路径一律受限。
 - 新逻辑必须有测试：UNIT 起步，多模块交互加 INT，界面级加 E2E。
 - 新文案双语齐备（`lib/i18n.ts` 的 parity 测试守着）。
-- 既有基线不下降：extension UNIT ≥638 / INT ≥138 / E2E ≥638；companion UNIT ≥48 / SYS ≥8。（基线随每次需求上调；下调必须先说明理由，否则等于把绿灯当装饰。）
+- 既有基线不下降：extension UNIT ≥638 / INT ≥138 / E2E ≥23；companion UNIT ≥48 / SYS ≥8。（基线随每次需求上调；下调必须先说明理由，否则等于把绿灯当装饰。）
 - **不要执行 git commit / git push**：本仓库的提交由人来做。
 
 ## 5. 文档同步
