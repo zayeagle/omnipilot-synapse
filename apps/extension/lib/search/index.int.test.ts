@@ -86,7 +86,8 @@ describe('SearchIndex (F4 INT)', () => {
 
     expect(store.shards.size).toBeGreaterThan(1);
     for (const key of store.shards.keys()) {
-      expect(key).toMatch(/^b[0-9a-f]{2}$/u);
+      // A6 (2026-10-10): the bucket generation letter is c now (64 buckets); see tokenize.ts.
+      expect(key).toMatch(/^c[0-9a-f]{2}$/u);
       expect(parseShard(store.shards.get(key) ?? null)).not.toBeNull();
     }
 

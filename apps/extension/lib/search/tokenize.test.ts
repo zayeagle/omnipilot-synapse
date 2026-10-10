@@ -14,8 +14,8 @@ describe('shardKey (F4 UNIT)', () => {
   it('TC-F4-U03 buckets a term by its whole text, not by a prefix', () => {
     // The key is no longer derived from the first characters, which is the whole point: a term's key
     // stops growing with the vocabulary, and two terms sharing a prefix no longer share a file.
-    expect(shardKey('alpha')).toMatch(/^b[0-9a-f]{2}$/u);
-    expect(shardKey('间隔重复')).toMatch(/^b[0-9a-f]{2}$/u);
+    expect(shardKey('alpha')).toMatch(/^c[0-9a-f]{2}$/u);
+    expect(shardKey('间隔重复')).toMatch(/^c[0-9a-f]{2}$/u);
     // The prefix scheme's keys are gone: these are not what a two-character prefix would produce.
     expect(shardKey('间隔重复')).not.toBe('间隔');
     expect(shardKey('alpha')).not.toBe('al');
@@ -69,8 +69,12 @@ describe('shardKey (F4 UNIT)', () => {
     expect(isShardKey('a')).toBe(false);
     expect(isShardKey('b0')).toBe(false);
     expect(isShardKey('bb')).toBe(false);
-    expect(isShardKey('b00')).toBe(true);
-    expect(isShardKey('bff')).toBe(true);
+    // A6 (2026-10-10): the generation letter is bumped with the bucket count - b (256) -> c (64) - because both
+    // produce three-character keys, and a stale shard read as live answers for the wrong terms.
+    expect(isShardKey('c00')).toBe(true);
+    expect(isShardKey('c3f')).toBe(true);
+    expect(isShardKey('b00')).toBe(false);
+    expect(isShardKey('bff')).toBe(false);
   });
 });
 

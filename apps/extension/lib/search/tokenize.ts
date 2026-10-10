@@ -35,11 +35,20 @@ const CJK_CHARACTER = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u;
  * Changing this number renames every shard, so it needs `search.rebuild` (the options page has the
  * button); {@link isShardKey} is what tells a stale shard from a live one in the meantime.
  */
-export const SHARD_BUCKETS = 256;
+/*
+ * 64, not 256. The bound is what matters: one capture rewrites at most SHARD_BUCKETS + 2 files however long the
+ * page is, and the repository holds at most SHARD_BUCKETS index files. 64 keeps a shard comfortably sized while
+ * cutting both numbers by four. Renaming shards needs search.rebuild; isShardKey separates live from stale.
+ */
+export const SHARD_BUCKETS = 64;
 
-/** A bucket key lives in its own space — `b` + the bucket index in hex — so it can never be mistaken for
- * one of the two-character prefix keys this scheme replaced. */
-const BUCKET_PREFIX = 'b';
+/**
+ * A bucket key lives in its own space: a letter + the bucket index in hex. The letter is bumped when the bucket
+ * COUNT changes, because old and new keys can otherwise be the same length and a stale shard would be read as a
+ * live one - silently answering for the wrong terms. `c` is the 64-bucket generation; `b` (256) is residue, and
+ * `isShardKey` is what tells them apart until `search.rebuild` has rewritten them.
+ */
+const BUCKET_PREFIX = 'c';
 const BUCKET_WIDTH = (SHARD_BUCKETS - 1).toString(16).length;
 
 /**
