@@ -44,7 +44,11 @@ export interface SyncRemote {
   readIndex(): Promise<IndexFile>;
   readFile(path: string): Promise<string | null>;
   listDir(path: string): Promise<DirEntry[]>;
-  commitFiles(files: RepoFile[], message: string): Promise<CommitResult>;
+  /**
+   * One commit, with optional deletions. A deletion travels as a tree entry whose sha is null (the Git Data
+   * API way); a transport that cannot do it must refuse rather than quietly ignoring the paths.
+   */
+  commitFiles(files: RepoFile[], message: string, deleted?: readonly string[]): Promise<CommitResult>;
   /** Fetch first, so reads see the remote rather than the local working tree (ssh). */
   refresh?(): Promise<unknown>;
 }
@@ -54,13 +58,13 @@ export function remoteFromStore(store: {
   readIndex(): Promise<IndexFile>;
   readFile(path: string): Promise<string | null>;
   listDir(path: string): Promise<DirEntry[]>;
-  commitFiles(files: RepoFile[], message: string): Promise<CommitResult>;
+  commitFiles(files: RepoFile[], message: string, deleted?: readonly string[]): Promise<CommitResult>;
 }): SyncRemote {
   return {
     readIndex: () => store.readIndex(),
     readFile: (path) => store.readFile(path),
     listDir: (path) => store.listDir(path),
-    commitFiles: (files, message) => store.commitFiles(files, message),
+    commitFiles: (files, message, deleted) => store.commitFiles(files, message, deleted),
   };
 }
 
@@ -75,7 +79,7 @@ export function remoteFromTransport(
   transport: {
     readFile(path: string): Promise<string | null>;
     listDir(path: string): Promise<DirEntry[]>;
-    commitFiles(files: RepoFile[], message: string): Promise<CommitResult>;
+    commitFiles(files: RepoFile[], message: string, deleted?: readonly string[]): Promise<CommitResult>;
     refresh?(): Promise<unknown>;
   },
   prefix?: string | null,
@@ -84,7 +88,7 @@ export function remoteFromTransport(
     readIndex: async () => parseIndex(await transport.readFile(indexPathFor(prefix))),
     readFile: (path) => transport.readFile(path),
     listDir: (path) => transport.listDir(path),
-    commitFiles: (files, message) => transport.commitFiles(files, message),
+    commitFiles: (files, message, deleted) => transport.commitFiles(files, message, deleted),
     refresh: () => transport.refresh?.() ?? Promise.resolve(),
   };
 }
