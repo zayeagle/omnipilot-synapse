@@ -88,7 +88,15 @@ export function buildPagePayload(doc: Document, distill: boolean): CaptureReques
 
 async function start(): Promise<void> {
   let prefs = await readPrefs();
-  if (!prefs.enabled) return;
+  /*
+   * The switch gates the bubble, not this script. Returning early when capture was off meant the switch only
+   * worked in one direction: turning it ON later never brought the bubble back without a page reload, and a tab
+   * already open when it was turned OFF kept its bubble. Installing the watcher and the listeners always, and
+   * reading the switch each time a selection settles, makes it immediate both ways.
+   */
+  if (!prefs.enabled) {
+    prefs = await readPrefs();
+  }
 
   const lang: Lang = detectLang(navigator.language);
   const toast = createToast({ doc: document, lang });
