@@ -56,6 +56,8 @@ import { planConflictResolution } from '../sync/conflict';
 import { createRemoteShardStore } from '../sync/shard-store';
 import type { SyncTriggers } from '../sync/triggers';
 import { SearchIndex } from '../search/index';
+import { createIndexedDbShardBackend, createLocalShardStore, createMemoryShardBackend } from '../search/local-store';
+import type { SearchStore } from '../search/index';
 import { documentOf, mergeDocuments } from '../search/postings';
 import type { SyncReason } from '../messages';
 import {
@@ -100,6 +102,11 @@ export interface BackgroundContext {
   native?: NativeClient | null;
   /** Injected in tests; production builds one lazily-created cache per worker. */
   syncCache?: SyncCache;
+  /**
+   * The machine's own search index. Injected in tests; production builds one per worker (IndexedDB when the
+   * worker has it, the memory fallback otherwise). Kept out of the repository on purpose - see 04-design F16.
+   */
+  searchStore?: SearchStore;
   /** Injected in tests; the entrypoint owns the `browser.alarms` binding. */
   triggers?: SyncTriggers;
   /**
@@ -400,14 +407,42 @@ function cardShards(store: RepoStore, prefix: string | null): CardDecisionShards
   };
 }
 
+/**
+ * The machine's index store, memoised per context exactly like the sync cache: two instances would each think
+ * they owned the shards.
+ */
+const localSearchStores = new WeakMap<BackgroundContext, SearchStore>();
+
+function localSearchStore(context: BackgroundContext): SearchStore {
+  const existing = localSearchStores.get(context);
+  if (existing) return existing;
+  if (context.searchStore) {
+    localSearchStores.set(context, context.searchStore);
+    return context.searchStore;
+  }
+  const factory = (globalThis as { indexedDB?: IDBFactory }).indexedDB ?? null;
+  const created = createLocalShardStore(
+    factory ? createIndexedDbShardBackend(factory) : createMemoryShardBackend(),
+  );
+  localSearchStores.set(context, created);
+  return created;
+}
+
 /** The index reads its shards out of the repository; the cache supplies the text for snippets. */
 function buildSearchIndex(
   remote: SyncRemote,
   prefix: string | null,
   cache: SyncCache,
   context: BackgroundContext,
+  /**
+   * Where the shards live. Left out, they come from the repository (the historical layout); the local store is
+   * passed once this machine owns its index. The drain only exists for the repository case, because a local
+   * write has no commit to ride in.
+   */
+  localStore?: SearchStore,
 ): { index: SearchIndex; drain: () => import('../store/types').RepoFile[] } {
-  const shards = createRemoteShardStore(remote, prefix);
+  const shards = localStore ?? createRemoteShardStore(remote, prefix);
+  const remoteShards = localStore ? null : createRemoteShardStore(remote, prefix);
   const index = new SearchIndex({
     store: shards,
     prefix,
@@ -447,7 +482,7 @@ function buildSearchIndex(
     },
     ...(context.now ? { now: context.now } : {}),
   });
-  return { index, drain: () => shards.drain() };
+  return { index, drain: () => remoteShards?.drain() ?? [] };
 }
 
 /**
@@ -953,7 +988,14 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
     'search.query': async (request) => {
       const { text, limit, filters } = validateSearchQuery(request.payload);
       const { remote, prefix } = await resolveSyncRemote(context);
-      const { index } = buildSearchIndex(remote, prefix, syncCache, context);
+      /*
+       * Dual read while the index moves to this machine: the local index answers when it has shards, and the
+       * repository answers otherwise. That keeps every existing installation working through the transition
+       * without a flag, and the fallback disappears with the repository layout in the migration step.
+       */
+      const local = localSearchStore(context);
+      const localKeys = await local.listShards().catch(() => [] as readonly string[]);
+      const { index } = buildSearchIndex(remote, prefix, syncCache, context, localKeys.length > 0 ? local : undefined);
       const query = withFilters(text, filters);
       const hits = await index.query(query, { limit });
       return ok({
