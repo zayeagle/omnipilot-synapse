@@ -6,8 +6,8 @@ import { SearchIndex } from './index';
 import {
   createLocalShardStore,
   createMemoryShardBackend,
-  markBuiltForHead,
-  readBuiltForHead,
+  markBuiltFrom,
+  readBuiltFrom,
 } from './local-store';
 
 /**
@@ -54,16 +54,16 @@ describe('local shard store (F16 UNIT)', () => {
     const backend = createMemoryShardBackend();
     const store = createLocalShardStore(backend);
     await backend.write('c00', 'a shard');
-    expect(await readBuiltForHead(backend)).toBeNull();
+    expect(await readBuiltFrom(backend)).toBeNull();
 
-    await markBuiltForHead(backend, 'headsha1');
-    expect(await readBuiltForHead(backend)).toBe('headsha1');
+    await markBuiltFrom(backend, 'headsha1');
+    expect(await readBuiltFrom(backend)).toBe('headsha1');
     // The marker lives beside the shards but is not one of them: listing it as a shard would make the index
     // parse its own metadata as postings.
     expect(await store.listShards()).toEqual(['c00']);
 
-    await markBuiltForHead(backend, 'headsha2');
-    expect(await readBuiltForHead(backend)).toBe('headsha2');
+    await markBuiltFrom(backend, 'headsha2');
+    expect(await readBuiltFrom(backend)).toBe('headsha2');
     expect(await store.listShards()).toEqual(['c00']);
   });
 });

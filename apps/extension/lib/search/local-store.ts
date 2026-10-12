@@ -105,14 +105,14 @@ export function createIndexedDbShardBackend(factory: IDBFactory): LocalShardBack
  * so a leading @ can never collide. Reading it is how a later sync knows whether the index still describes the
  * records it can see - without this, a head that moved would leave the index quietly answering for the past.
  */
-export const INDEX_HEAD_KEY = '@head';
+export const INDEX_BUILT_KEY = '@built';
 
-export async function readBuiltForHead(backend: LocalShardBackend): Promise<string | null> {
-  return await backend.read(INDEX_HEAD_KEY);
+export async function readBuiltFrom(backend: LocalShardBackend): Promise<string | null> {
+  return await backend.read(INDEX_BUILT_KEY);
 }
 
-export async function markBuiltForHead(backend: LocalShardBackend, head: string): Promise<void> {
-  await backend.write(INDEX_HEAD_KEY, head);
+export async function markBuiltFrom(backend: LocalShardBackend, signature: string): Promise<void> {
+  await backend.write(INDEX_BUILT_KEY, signature);
 }
 
 /**
@@ -122,20 +122,47 @@ export async function markBuiltForHead(backend: LocalShardBackend, head: string)
  * from a head the repository has since moved past - answering from that would quietly serve the past. A
  * repository whose head is unknown cannot make the index stale, so the index is trusted.
  */
+/**
+ * A signature of the records an index was built from: what makes an index stale is the RECORD SET changing, not
+ * a repository head moving. Comparing heads was wrong in practice - the same state read a timestamp on one side
+ * and nothing on the other - and the two sides here read exactly the same cache, so there is nothing to race.
+ */
+export function signatureOf(parts: readonly string[]): string {
+  const joined = [...parts].sort().join('|');
+  // FNV-1a, 32 bit: short, stable, and no dependency for what is only an equality check.
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < joined.length; index += 1) {
+    hash ^= joined.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return followedBy(hash, joined.length);
+}
+
+function followedBy(hash: number, length: number): string {
+  return hash.toString(16).padStart(8, '0') + '-' + String(length);
+}
+
+/**
+ * Whether this machine's index can answer for the records the cache currently holds.
+ *
+ * Usable only when something was built here AND it was built from exactly these records. An unknown signature
+ * (an index from before this existed) is not the current one, so it is not trusted; there is no case where a
+ * missing value should be read as a match.
+ */
 export function shouldUseLocalIndex(input: {
   shards: number;
-  builtForHead: string | null;
-  repoHead: string | null;
+  builtFrom: string | null;
+  current: string | null;
 }): boolean {
   if (input.shards === 0) return false;
-  if (input.repoHead === null) return true;
-  return input.builtForHead === input.repoHead;
+  if (input.builtFrom === null || input.current === null) return false;
+  return input.builtFrom === input.current;
 }
 
 export function createLocalShardStore(backend: LocalShardBackend): SearchStore {
   return {
     // The head marker is metadata, not an index: it must never be read, parsed or listed as a shard.
-    listShards: async () => (await backend.list()).filter((key) => key !== INDEX_HEAD_KEY),
+    listShards: async () => (await backend.list()).filter((key) => key !== INDEX_BUILT_KEY),
     readShard: (key) => backend.read(key),
     writeShard: (key, content) => backend.write(key, content),
     removeShard: (key) => backend.remove(key),

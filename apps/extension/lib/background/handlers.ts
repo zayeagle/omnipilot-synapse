@@ -60,8 +60,9 @@ import {
   createIndexedDbShardBackend,
   createLocalShardStore,
   createMemoryShardBackend,
-  readBuiltForHead,
+  readBuiltFrom,
   shouldUseLocalIndex,
+  signatureOf,
 } from '../search/local-store';
 import type { SearchStore } from '../search/index';
 import type { LocalShardBackend } from '../search/local-store';
@@ -998,10 +999,12 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       const local = localIndex(context);
       const localKeys = await local.store.listShards().catch(() => [] as readonly string[]);
       const state = await syncCache.state();
+      // The signature comes from the same cache the rebuild reads, so the two sides cannot disagree.
+      const current = signatureOf((await syncCache.all()).map((entry) => `${entry.path}:${entry.updatedAt}`));
       const usable = shouldUseLocalIndex({
         shards: localKeys.length,
-        builtForHead: await readBuiltForHead(local.backend),
-        repoHead: typeof state.head === 'string' && state.head.length > 0 ? state.head : null,
+        builtFrom: await readBuiltFrom(local.backend),
+        current,
       });
       const { index } = buildSearchIndex(remote, prefix, syncCache, context, usable ? local.store : undefined);
       const query = withFilters(text, filters);

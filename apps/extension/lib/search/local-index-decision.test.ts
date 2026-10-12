@@ -1,25 +1,25 @@
 import { describe, expect, it } from 'vitest';
 
-import { shouldUseLocalIndex } from './local-store';
+import { shouldUseLocalIndex, signatureOf } from './local-store';
 
 /**
- * F16 step 4 - the two ways a machine's index must NOT be trusted.
+ * F16 step 4 - the index is usable only for the records it was built from.
  *
- * Nothing built here yet, or built from a head the repository has moved past: answering from either would serve
- * something other than what the records now say, and quietly. A head that is simply unknown cannot make the
- * index stale, so the index is trusted then.
+ * The signature is over the cache the two sides share, so nothing races: a record set that changed makes the
+ * signature differ, and an index with no signature recorded is never treated as current.
  */
 describe('local index decision (F16 UNIT)', () => {
-  it('TC-F16-U07 refuses an index with nothing in it, or one built for another head', () => {
-    // Nothing built on this machine.
-    expect(shouldUseLocalIndex({ shards: 0, builtForHead: null, repoHead: 'h1' })).toBe(false);
-    // Built here, and the repository is at the head it was built from.
-    expect(shouldUseLocalIndex({ shards: 3, builtForHead: 'h1', repoHead: 'h1' })).toBe(true);
-    // The repository moved on: the index describes the past.
-    expect(shouldUseLocalIndex({ shards: 3, builtForHead: 'h0', repoHead: 'h1' })).toBe(false);
-    // Never recorded (an index from before this existed), with a known head: not this head, so not trusted.
-    expect(shouldUseLocalIndex({ shards: 3, builtForHead: null, repoHead: 'h1' })).toBe(false);
-    // No head to compare against: nothing can make it stale.
-    expect(shouldUseLocalIndex({ shards: 3, builtForHead: 'h0', repoHead: null })).toBe(true);
+  it('TC-F16-U07 refuses an index with nothing in it, or one built from other records', () => {
+    expect(shouldUseLocalIndex({ shards: 0, builtFrom: 'a', current: 'a' })).toBe(false);
+    expect(shouldUseLocalIndex({ shards: 3, builtFrom: 'a', current: 'a' })).toBe(true);
+    expect(shouldUseLocalIndex({ shards: 3, builtFrom: 'a', current: 'b' })).toBe(false);
+    expect(shouldUseLocalIndex({ shards: 3, builtFrom: null, current: 'a' })).toBe(false);
+    expect(shouldUseLocalIndex({ shards: 3, builtFrom: 'a', current: null })).toBe(false);
+  });
+
+  it('TC-F16-U08 signs the record set, order-independently and content-sensitively', () => {
+    expect(signatureOf(['a:1', 'b:2'])).toBe(signatureOf(['b:2', 'a:1']));
+    expect(signatureOf(['a:1', 'b:2'])).not.toBe(signatureOf(['a:1', 'b:3']));
+    expect(signatureOf(['a:1'])).not.toBe(signatureOf(['a:1', 'b:2']));
   });
 });
