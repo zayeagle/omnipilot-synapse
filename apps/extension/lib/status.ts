@@ -251,6 +251,7 @@ export const ERROR_GUIDANCE: Record<ErrorCode, ErrorGuidance> = {
   emptyResponse: { titleKey: 'error.emptyResponse', actionKey: 'guidance.emptyResponse.action', target: 'retry' },
   parse: { titleKey: 'error.parse', actionKey: 'guidance.parse.action', target: 'retry' },
   publicRepo: { titleKey: 'error.publicRepo', actionKey: 'guidance.publicRepo.action', target: 'storage' },
+  disabled: { titleKey: 'error.disabled', actionKey: 'guidance.disabled.action', target: 'none' },
   notConfigured: { titleKey: 'error.notConfigured', actionKey: 'guidance.notConfigured.action', target: 'storage' },
   validation: { titleKey: 'error.validation', actionKey: 'guidance.validation.action', target: 'sync' },
   nativeUnavailable: { titleKey: 'error.nativeUnavailable', actionKey: 'guidance.nativeUnavailable.action', target: 'companion' },

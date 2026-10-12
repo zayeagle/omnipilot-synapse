@@ -1,19 +1,19 @@
 ---
 branch: main
-last_phase: 5
-last_task_group: G1
-timestamp: 2026-10-08T10:45:03.564+08:00
+last_phase: 0
+last_task_group: null
+timestamp: 2026-10-12T14:25:44.9794391+08:00
 complexity: M
 complexity_effective: M
-status: completed
+status: in_progress
 phase5: skipped by user (no production deploy for an unpacked extension)
 spec_mode_active: true
-requirement_id: req-2026-09-30-synapse-manual-entry
-previous_requirement: req-2026-09-30-synapse-auth-tier-integrity
-state_files: ["00-project-context.md", "08-spec.md", "04-design.md", "05-test-plan.md", "02-plan.md"]
-active_feature: F11
-active_group: 1
-context_hot: ["00-project-context.md", "docs/requirements/00-requirements.md §5B (form A: Git)"]
+requirement_id: req-2026-10-10-synapse-index-locality
+previous_requirement: req-2026-09-30-synapse-manual-entry
+state_files: ["00-project-context.md"]
+active_feature: F16-fix (index locality)
+active_group: null
+context_hot: ["00-project-context.md", "docs/omnidev-state/main/04-design.md (F16)", "docs/omnidev-state/main/02-plan.md (Open Backlog)"]
 mid_task: null
 mid_task_files: []
 resume_payload: null
@@ -23,6 +23,41 @@ phase0_decision: confirm+autopilot (phase0_complexity)
 waivers: ["e2e: user instruction 2026-09-30 (twice) - do not run the browser suite; manual acceptance for TC-F11-S01 instead"]
 autopilot: true
 ---
+
+## Phase 0 Assessment — req-2026-10-10-synapse-index-locality
+
+**Requirement Analysis**: 业主两次实测报告同一现象：仓库 `search/` 目录仍在增长（一行一个 bucket.json，提交信息就是那次
+capture），而检索「能力」返回「没有匹配结果」。这不是两个 bug，是 F16 只做了一半留下的**索引分裂** —— 写路径仍指向仓库，
+读路径已经指向本机。
+
+**Evidence (code, not inference)**:
+- 写：`lib/background/handlers.ts:498 shardProvider()` 用 `createRemoteShardStore(store, prefix)`；被
+  `entrypoints/background.ts:277`、`handlers.ts:679`、`handlers.ts:1276` 的 capture / distill / card 路径使用，
+  `lib/capture/service.ts:178` 把它折进 `commitRecord` 的同一次提交 —— 于是每次捕获都往**仓库**写分片。
+- 读：`handlers.ts:992 search.query` 用 `localIndex(context)`（IndexedDB，`lib/search/local-store.ts`）。
+- 缓存：`cache.put` 在整个非测试代码里只出现在 `lib/sync/engine.ts:217`（拉取时）；捕获提交**不写** sync cache。
+- 合成症状：一次 `search.rebuild` 之后 builtFrom == cache 签名；此后每次捕获都不改签名 → `shouldUseLocalIndex` 返回
+  true → 查询继续读**本机**索引，而这次捕获写的分片在**仓库**里 → 新笔记永远查不到，仓库 `search/` 持续增长。
+- 另一个独立的吞结果缺陷：`lib/search/index.ts:240-248 readShards()` 在 `listShards()` 返回**空数组**时把它当成
+  「这些分片都不存在」，wanted 被过滤成 `[]`，一个分片都不读 → 0 命中。`02-plan`（2026-10-09「已修」）声称已改成
+  「空列表按无法回答处理」，但代码里没有这个判断（`git log -L` 证实该函数自 3d38dd1 引入后未再改动）——文档与代码不一致。
+
+**Project Structure**: frontend-only — `apps/extension`（WXT + TypeScript, MV3）+ `apps/git-bridge` 伴生进程；无服务端。
+**Complexity Assessment**: M — 修复面跨 search 的写 / 读 / 缓存三条路径，外加一次性仓库迁移（删除既有 `search/**`）；
+  「索引只存本机」这个数据结构决定已经做过，本需求是把它执行完整；不加新协议、新消息类型、新依赖。
+**Stability Level**: standard — 单用户本地数据；但删除仓库 `search/**` 是不可逆动作，须按「派生数据、可重建」论证。
+**Frontend Impact**: 无新界面；只有检索结果与「重建索引」既有面板的行为/文案。
+**Test Strategy Hint**: frontend-M — UNIT（readShards 空列表、写路径选择）+ INT（捕获后立即可查、仓库不再新增
+  `search/**`、既有 `search/**` 被迁移删除且命中不回退）。E2E 仍按既有 waiver。
+**Recommended Strategy**: Phase 2 Plan → Phase 3 Dev → Phase 4 Test（M 跳过 Blueprint）。
+**Recommended Scope**:
+  1. 捕获 / distill / card 的写路径改到本机索引（shardProvider → local store），仓库提交里不再出现 `search/**`。
+  2. 一次性迁移：删除仓库既有 `search/**`（Git Data API `sha: null`；SSH 侧按既有 `deleteUnsupported` 如实报告限制）。
+  3. `readShards`：空列表按「无法回答」处理，直接读候选（补回 02-plan 声称已修的那个判断）。
+  4. 捕获后索引立刻可查：写本机之后同步 builtFrom / 签名，或让签名取自本机索引自身。
+  5. 测试与实测：改前 / 改后的仓库文件数、捕获后的检索命中、重建耗时。
+**Open question for Phase 2**: 迁移触发点（同步时自动清理 vs 设置页一次性按钮）与幂等性。
+**Confirmation Level**: reduced (M).
 
 ## Session Goal — req-2026-09-30-synapse-manual-entry
 

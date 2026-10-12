@@ -394,6 +394,7 @@ export type ErrorCode =
   | 'emptyResponse'
   | 'publicRepo'
   | 'notConfigured'
+  | 'disabled'
   | 'parse'
   | 'validation'
   /** The companion process is not installed, not running, or refused the connection. */

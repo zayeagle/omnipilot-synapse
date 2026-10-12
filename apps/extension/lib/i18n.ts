@@ -389,6 +389,8 @@ export const en: Dict = {
   'error.emptyResponse': 'The model returned an empty response',
   'error.badJson': 'The model response was not valid JSON',
   'error.publicRepo': 'Writes to a public repository are blocked until you acknowledge the risk',
+  'error.disabled': 'Capture is switched off',
+  'guidance.disabled.action': 'Open the panel and tick the capture switch',
   'error.notConfigured':
     'Storage is not fully configured — the repository address or the stored token is missing',
   'error.nativeUnavailable': 'The companion process is not installed — SSH mode needs it',
@@ -770,6 +772,8 @@ export const zh_CN: Dict = {
   'error.emptyResponse': '模型返回了空响应',
   'error.badJson': '模型返回的不是合法 JSON',
   'error.publicRepo': '已阻止写入公开仓库，需先确认风险',
+  'error.disabled': '捕获已关闭',
+  'guidance.disabled.action': '在扩展面板勾选「启用捕获」',
   'error.notConfigured': '存储配置不完整 —— 仓库地址或已保存的 Token 有缺失',
   'error.nativeUnavailable': '未安装伴生进程 — SSH 模式需要它',
   'error.protocolMismatch': '伴生进程版本过旧，请升级',

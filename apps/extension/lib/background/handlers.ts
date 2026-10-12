@@ -673,6 +673,14 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       const payload = validateCaptureRequest(request.payload);
       const store = await resolveStore(context);
       const settings = await context.settings.load();
+      /*
+       * The master switch is enforced HERE, not only in the UI: a page still offering the bubble (an older
+       * content script, a caller that ignores it) is refused with a reason rather than quietly captured.
+       * Capture is opt-in, and the worker is the only place that cannot be bypassed.
+       */
+      if (!settings.enabled) {
+        throw new MessageError('capture is switched off', 'disabled');
+      }
       const service = new CaptureService({
         store,
         queue: context.queue,

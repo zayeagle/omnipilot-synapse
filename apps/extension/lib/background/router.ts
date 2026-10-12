@@ -110,6 +110,7 @@ const ERROR_CODE_TABLE: Record<ErrorCode, true> = {
   emptyResponse: true,
   publicRepo: true,
   notConfigured: true,
+  disabled: true,
   parse: true,
   validation: true,
   nativeUnavailable: true,
