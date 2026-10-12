@@ -155,12 +155,13 @@ test('TC-E2E-01 a change made in the repository while the extension was idle is 
     expect(drift.pulled).toBe(1);
     expect(drift.pushed).toBe(0);
 
-    // The cache is where "pulled" becomes observable to the rest of the product: the synced note is
-    // now local, and the search index built from it answers for the text that only ever existed in
-    // the repository.
+    // The cache is where "pulled" becomes observable to the rest of the product: the synced note is now
+    // local, the pull indexed it on this machine (F17), and the query answers for text that only ever
+    // existed in the repository.
     expect(await localPathsFromCache(options, github)).toEqual([path]);
     const rebuilt = await sendToExtension(options, 'search.rebuild');
     expect(rebuilt.ok).toBe(true);
+    expect([...github.files.keys()].some((key) => key.includes('search/'))).toBe(false);
     const found = await sendToExtension(options, 'search.query', { text: 'rewritten', limit: 10 });
     expect(found.ok).toBe(true);
     const hits = (found.data as { hits: Array<{ path: string }> }).hits;

@@ -478,3 +478,69 @@ checkout 静默未生效）恢复，套件回到绿。那条守卫用例待缺�
 未完成（明确记录）：本机索引的 INT 证明用例 —— 我三次尝试把用例追加到 handlers.int.test.ts 都让文件失衡
 （该文件 CRLF + 体量大），已放弃这种改法；下次应改用新建测试文件或在 E2E 里覆盖。当前本机索引的正确性由
 lib/search/local-store.test.ts（驱动真实 SearchIndex 建索引并命中）覆盖 ✓。
+
+## F17 索引分裂修复（req-2026-10-10-synapse-index-locality）· 2026-10-12
+
+### 业主两问的答案
+
+1. **「仓库里为什么还有这么多 cXX.json」** —— F16 只换了**读**的那一半。写路径（`shardProvider()` / `cardShards()` /
+   `conflict.resolve` / 同步引擎的 `changedShards` + `drainShards`）全部仍在向仓库提交分片，所以每捕获一次仓库就
+   多改一次 `search/<bucket>.json`；F16 决议里的「迁移：删除仓库既有 search/**」从未实现。
+2. **「检索还是搜不出来」** —— 索引被劈成两半：写仓库、读本机。本机索引只在 `search.rebuild` 时更新，而捕获**不写**
+   缓存（`cache.put` 全仓只出现在拉取路径），`shouldUseLocalIndex` 的签名因此永远不变 ⇒ 一直相信本机那份**不含新记录**
+   的索引 ⇒ 新捕获的笔记永远查不到，且界面显示「没有匹配结果」（不是「需要重建」），与业主截图一致。
+
+### 改动（按 02-plan 分组）
+
+- ✅ **T1/T2/T3 写路径回本机**：新增 `localShards(context, prefix, cache)`，其 `change`/`remove` 在**本机索引**上落盘后
+  返回 `[]`（不再有可提交的分片）；capture / distill / card.decide / source.archive / source.delete / conflict.resolve
+  全部改用它；`buildSearchIndex` 去掉仓库分片分支与 `drainShards`；同步引擎改为「拉取即索引、推送即索引、移除即摘除」。
+- ✅ **T4** `readShards`：**空列表不再被当作「分片都不存在」** —— 旧行为会把已存在的分片当成不存在、用只含自己词项的版本
+  覆盖它们（静默索引损坏）。`02-plan` 里记的「已修」在代码里从来不存在，本次才真正落地。
+- ✅ **T5** 陈旧 / 缺失不再回落仓库（那里已经没有分片），分别报 `needsRebuild` / `indexMissing` + 既有重建动作。
+- ✅ **T6/T7 迁移放进 `search.rebuild`**（而非同步）：重建是「本机一定可用」的那一刻，早删会出现两边都没有索引的空窗。
+  删除路径由仓库列出的名字拼接，因此先拒绝含 `/`、`\`、`.`/`..` 的名字（S4-01）。SSH 侧 `deleteUnsupported` 如实上报
+  并给出替代（Token 模式）；结果里显示清理条数或跳过原因（双语）。
+- ✅ **T8** 断言翻转（A6，见下表）· ✅ **T9** 实测 · ✅ **T10** B.22 审计（PASS）· ✅ **T11** 文档同步。
+
+### 断言变更（A6）
+
+| 位置 | 旧断言 | 新断言 | 理由 |
+|------|--------|--------|------|
+| engine.test.ts TC-F3-U09 | 提交里有 `search/` 分片 | 提交里**没有**分片 + 本机 `listShardKeys()>0` | 索引不再随记录提交 |
+| handlers.int.test.ts TC-F16-I01 | 删仓库分片后重建 `shards>0` | → **TC-F17-I01**：捕获后立刻命中，仓库分片 0 | 旧前提（索引在仓库）消失 |
+| handlers.int.test.ts TC-F16-I03 | 删仓库分片 → `indexMissing` | → **TC-F17-I02**：另一台机器（记录在、本机索引无）→ `indexMissing`，重建后命中 | 索引不再随仓库走，跨设备才是真实场景 |
+| handlers.int.test.ts TC-F16-I02 | 仓库有分片 | 仓库无分片；在同一台慢机器上捕获后查询 | 同上 |
+| index.int.test.ts TC-F4-I04 | 冷仓库（空列表）0 次读 | 空列表按「无法回答」处理，读全部候选 | 空列表不是「不存在」的证据 |
+
+### 实测（改前 → 改后）
+
+| 指标 | 改前 | 改后 | 证据 |
+|------|------|------|------|
+| 捕获后立刻检索 | 0 命中（本机索引没有这条） | **1 命中** | INT TC-F17-I01 `{"hits":1,"indexMissing":false,"repositoryShards":0}` |
+| 捕获提交里的 `search/**` | 1–2 个分片文件（中文笔记最多 66） | **0** | 同上 `repositoryShards:0` |
+| 仓库遗留旧分片 | 只增不减 | 重建时删除并报数 | INT TC-F17-I03 `{"cleaned":2,"cleanupSkipped":null,"left":0}` |
+| 第二台设备 | 依赖仓库分片（被删后会坏） | 明确 `indexMissing` → 重建一次 → 命中 | INT TC-F17-I02 `{"indexMissing":true,"rebuilt":true,"hits":1}` |
+
+> 上一会话留下的「记录正文可能不含『能力』」是另一条**数据侧**假设。本次的结构性成因已由代码路径与新用例证明，无需它
+> 解释症状。若业主升级后仍搜不到某条，再按那条路径检查该记录的正文本身，而不是继续怀疑检索代码（TC-F16-I08 仍守着这一点）。
+
+### 验证
+
+| Layer | Command | Result |
+|-------|---------|--------|
+| types | `npx tsc --noEmit` | 0 |
+| UNIT | `npm test` | **645** passed / 69 files（基线 645） |
+| INT | `npm run test:int` | **139** passed / 13 files（基线 139） |
+| REG | `npm run test:reg` | **416** passed（基线 416） |
+| build | `npm run build` | 0（451.33 kB） |
+| content | `npm run assert:content` | OK |
+| companion | `npm run test:bridge` · `test:sys` | 48 · 8（未改动） |
+| E2E | (waived) | 规格已按新真相更新（不再断言仓库有分片），**未运行** —— 沿用业主 2026-09-30 豁免 |
+
+🔒 Security audit · iter 1 · PASS · blocking=0（S4-01 已修；S6-01 MEDIUM 接受并进 backlog）
+
+### 手工验收（仍欠，沿用 E2E 豁免）
+
+刷新扩展 → 写一条含「能力」的笔记 → 保存 → **不点重建**直接搜「能力」应命中；同时打开 GitHub 仓库确认这次提交里没有
+`search/`；再点一次「重建索引」，旧分片应被清理并在提示里报出条数。

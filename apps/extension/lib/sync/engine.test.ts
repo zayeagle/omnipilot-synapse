@@ -4,7 +4,7 @@ import { VaultLockedError } from '../security/key-session';
 import { SearchIndex } from '../search/index';
 import { createMemoryBackend, SyncCache } from './cache';
 import { runSync, type SyncDeps, type SyncRemote } from './engine';
-import { createRemoteShardStore } from './shard-store';
+import { createLocalShardStore, createMemoryShardBackend } from '../search/local-store';
 import { serializeIndex, type IndexFile } from '../store/tier';
 import type { ContentCodec, IndexItem } from '../store/codec';
 import type { CkfRecord, SourceItem } from '../core/ckf';
@@ -129,15 +129,14 @@ function fakeRemote(manifest: IndexFile, bodies: Record<string, string> = {}): F
 
 function depsFor(fake: FakeRemote, overrides: Partial<SyncDeps> = {}): SyncDeps {
   const cache = overrides.cache ?? new SyncCache(createMemoryBackend());
-  const shardStore = createRemoteShardStore(fake.remote, null);
-  const index = new SearchIndex({ store: shardStore, pathOf });
+  // The index lives on this machine, so the engine writes into a local store and commits no shards.
+  const index = new SearchIndex({ store: createLocalShardStore(createMemoryShardBackend()), pathOf });
   return {
     cache,
     index,
     codec,
     remote: fake.remote,
     prefix: null,
-    drainShards: () => shardStore.drain(),
     ...overrides,
   };
 }
@@ -209,13 +208,14 @@ describe('sync engine (F3 UNIT)', () => {
     expect(committed).not.toContain(pathOf(gone));
   });
 
-  it('TC-F3-U09 push writes the record, its shards and the manifest in one commit, then clears dirty', async () => {
+  it('TC-F3-U09 push writes the record and the manifest in one commit, indexes it here, then clears dirty', async () => {
     const fresh = source('fresh', V2);
     const fake = fakeRemote(manifestOf([]));
     const cache = new SyncCache(createMemoryBackend());
     await cache.put(fresh, { path: pathOf(fresh), sha: '', markDirty: true });
 
-    const report = await runSync(depsFor(fake, { cache }), 'capture');
+    const deps = depsFor(fake, { cache });
+    const report = await runSync(deps, 'capture');
 
     expect(report.outcome).toBe('pushed');
     expect(report.pushed).toBe(1);
@@ -223,7 +223,9 @@ describe('sync engine (F3 UNIT)', () => {
     const paths = fake.commits[0]?.files.map((file) => file.path) ?? [];
     expect(paths).toContain(pathOf(fresh));
     expect(paths).toContain(indexPath());
-    expect(paths.some((path) => path.startsWith('search/'))).toBe(true);
+    // The index is this machine's: the pushed record is indexed HERE and never committed (F17).
+    expect(paths.some((path) => path.startsWith('search/'))).toBe(false);
+    expect((await deps.index.listShardKeys()).length).toBeGreaterThan(0);
     expect(fake.commits[0]?.message).toContain('sync(capture)');
     expect(await cache.dirty()).toEqual([]);
   });

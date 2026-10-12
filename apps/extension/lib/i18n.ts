@@ -273,6 +273,8 @@ export const en: Dict = {
   'options.search.rebuiltEmpty': 'Nothing to index — sync first',
   'options.search.rebuiltNoShards': 'Nothing to index — the records carry no text (empty bodies)',
   'options.search.rebuiltUpToDate': 'Index already up to date — nothing needed writing',
+  'options.search.cleaned': 'repository index removed ({count} shard(s), derived data)',
+  'options.search.cleanupSkipped': 'the repository index could not be removed on this transport — switch to Token mode to finish',
   'options.search.open': 'Open',
 
   'popup.sync': 'Sync',
@@ -658,6 +660,8 @@ export const zh_CN: Dict = {
   'options.search.rebuiltEmpty': '没有可索引的记录 — 请先同步',
   'options.search.rebuiltNoShards': '没有可索引的文本 —— 这些记录的正文为空',
   'options.search.rebuiltUpToDate': '索引已是最新 —— 无需写入',
+  'options.search.cleaned': '已清理仓库里的旧索引分片 {count} 个（派生数据，可重建）',
+  'options.search.cleanupSkipped': '此模式下无法删除仓库里的旧索引分片 —— 切到 Token 模式可完成清理',
   'options.search.open': '打开',
 
   'popup.sync': '同步',

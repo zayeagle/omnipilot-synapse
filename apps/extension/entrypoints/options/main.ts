@@ -1430,11 +1430,27 @@ function applyFormToInputs(): void {
      * is exactly how a repository ended up with no search/ directory while the UI said the index had been
      * rebuilt. `0 / 0` is a lie made visible, and the empty case says what to do about it.
      */
-    const rebuilt = response.data as { records?: number; shards?: number; indexable?: number } | null;
+    const rebuilt = response.data as {
+      records?: number;
+      shards?: number;
+      indexable?: number;
+      cleaned?: number;
+      cleanupSkipped?: string | null;
+    } | null;
     const rebuiltRecords = rebuilt?.records ?? 0;
     const rebuiltShards = rebuilt?.shards ?? 0;
     const rebuiltIndexable = rebuilt?.indexable ?? rebuiltRecords;
     const counts = `${rebuiltRecords} / ${rebuiltShards}`;
+    /*
+     * The migration's own line (F17): the rebuild is where the repository's copy of the index is removed,
+     * so it has to be visible - either as "these left the repository" or as the reason they could not.
+     */
+    const cleanup =
+      (rebuilt?.cleaned ?? 0) > 0
+        ? ` · ${t('options.search.cleaned', { count: rebuilt?.cleaned ?? 0 }, LANG)}`
+        : rebuilt?.cleanupSkipped
+          ? ` · ${t('options.search.cleanupSkipped', null, LANG)}`
+          : '';
     /*
      * Each outcome gets its own sentence, because they need different things from the user:
      *   no records        -> sync first (there is nothing to index yet)
@@ -1443,18 +1459,18 @@ function applyFormToInputs(): void {
      * A bare `1 / 0` told the owner none of that.
      */
     if (rebuiltRecords === 0) {
-      toast.show(`${t('options.search.rebuiltEmpty', null, LANG)} · ${counts}`, 'info');
+      toast.show(`${t('options.search.rebuiltEmpty', null, LANG)} · ${counts}${cleanup}`, 'info');
       return;
     }
     if (rebuiltIndexable === 0) {
-      toast.show(`${t('options.search.rebuiltNoShards', null, LANG)} · ${counts}`, 'info');
+      toast.show(`${t('options.search.rebuiltNoShards', null, LANG)} · ${counts}${cleanup}`, 'info');
       return;
     }
     if (rebuiltShards === 0) {
-      toast.show(`${t('options.search.rebuiltUpToDate', null, LANG)} · ${counts}`, 'success');
+      toast.show(`${t('options.search.rebuiltUpToDate', null, LANG)} · ${counts}${cleanup}`, 'success');
       return;
     }
-    toast.show(`${t('options.search.rebuilt', null, LANG)} · ${counts}`, 'success');
+    toast.show(`${t('options.search.rebuilt', null, LANG)} · ${counts}${cleanup}`, 'success');
     if (searchQuery.length > 0) await runSearch();
   }
 

@@ -2,15 +2,15 @@
 branch: main
 last_phase: 0
 last_task_group: null
-timestamp: 2026-10-12T14:25:44.9794391+08:00
+timestamp: 2026-10-12T16:20:00+08:00
 complexity: M
 complexity_effective: M
 status: in_progress
 phase5: skipped by user (no production deploy for an unpacked extension)
-spec_mode_active: true
-requirement_id: req-2026-10-10-synapse-index-locality
-previous_requirement: req-2026-09-30-synapse-manual-entry
-state_files: ["00-project-context.md"]
+spec_mode_active: false
+requirement_id: req-2026-10-12-synapse-capture-switch-authority
+previous_requirement: req-2026-10-10-synapse-index-locality
+state_files: ["00-project-context.md", "04-design.md", "05-test-plan.md", "02-plan.md", "03-progress.md", "05-test-report.md", "07-security-audit.md"]
 active_feature: F16-fix (index locality)
 active_group: null
 context_hot: ["00-project-context.md", "docs/omnidev-state/main/04-design.md (F16)", "docs/omnidev-state/main/02-plan.md (Open Backlog)"]
@@ -18,8 +18,18 @@ mid_task: null
 mid_task_files: []
 resume_payload: null
 resume_payload_at: null
-pending_decision: null
-phase0_decision: confirm+autopilot (phase0_complexity)
+pending_decision:
+  decision_point: phase0_complexity + b0_confirm
+  note: "两问同轮提出；原生 ask_user_question 超时未答，回退 §8 表（md_table）"
+  options:
+    - { id: b0_opt_in, command: "/od 1" }
+    - { id: b0_default_on, command: "/od 2" }
+    - { id: b0_fix_off_only, command: "/od 3" }
+    - { id: confirm, command: "/od n" }
+    - { id: autopilot, command: "/od auto" }
+    - { id: adjust, command: "/od ad" }
+    - { id: cancel, command: "/od x" }
+phase0_decision: pending (phase0_complexity)
 waivers: ["e2e: user instruction 2026-09-30 (twice) - do not run the browser suite; manual acceptance for TC-F11-S01 instead"]
 autopilot: true
 ---
@@ -57,6 +67,74 @@ capture），而检索「能力」返回「没有匹配结果」。这不是两�
   4. 捕获后索引立刻可查：写本机之后同步 builtFrom / 签名，或让签名取自本机索引自身。
   5. 测试与实测：改前 / 改后的仓库文件数、捕获后的检索命中、重建耗时。
 **Open question for Phase 2**: 迁移触发点（同步时自动清理 vs 设置页一次性按钮）与幂等性。
+**Confirmation Level**: reduced (M).
+
+## Phase 2 — Plan (req-2026-10-10-synapse-index-locality)
+
+**Artifacts**: `04-design.md`（Feature F17，唯一 feature）· `05-test-plan.md`（frontend-M：UNIT 6 / INT 5 / SMK 1 / REG 1，E2E 沿用 waiver）·
+`02-plan.md`（4 组 / 11 任务，每任务带 outputs + verify 命令）。前一版 04-design / 02-plan / 05-test-plan 已按 B.14 归档到配对的
+`*-history.md`（Archived 2026-10-12 - req-2026-09-30-synapse-manual-entry）。
+
+**Design fixing point**: 本需求不是"再设计一个数据结构"，而是把 F16 的决策**执行完整** —— 决策（索引只存本机）已做完，
+缺的是**写路径**（捕获 / 提炼 / 卡片仍把分片提交进仓库）与**索引与记录同源**这条不变量。02-plan 里"readShards 已修"一条经代码
+核对不成立，已在 F17 设计与测试计划中纠正为待修缺陷。
+
+**autopilot_default: phase2_plan_ready → next**（soft gate，未 STOP）
+**autopilot_default: phase0_complexity → confirm**（用户已选 Confirm + full autopilot）
+
+## Result — req-2026-10-10-synapse-index-locality
+
+| Phase | Outcome |
+|-------|---------|
+| 0 Assessment | M（写仓库 / 读本机的索引分裂 + readShards 写侧损坏）；用户选 Confirm + full autopilot |
+| 1 Blueprint | 跳过（M） |
+| 2 Plan | 04-design **F17** · 05-test-plan（UNIT 6 / INT 5 / SMK 1 / REG 1）· 02-plan（4 组 / 11 任务）；旧版归档到 `*-history.md` |
+| 3 Dev | 写路径全部搬到本机索引；查询不再回落仓库；`readShards` 空列表守卫；迁移改由 `search.rebuild` 执行；断言翻转 A6 |
+| 4 Test | tsc 0 · UNIT **645** · INT **139** · REG **416** · build 0（451.41 kB）· assert:content OK · companion 48 / 8 · E2E **waived**（Gap 已记录） |
+| 5 Deploy | 跳过：unpacked extension，无生产部署；变更未提交（仓库规则：由人提交） |
+
+**Security (B.22)**: iter 1 · **PASS** · blocking=0 —— S4-01 当轮修复；S6-01（本机索引明文）MEDIUM 接受并进 backlog。
+**Net security gain**: 仓库不再收到任何索引材料（vault 档位下「密文记录 + 明文倒排」的实质降级已根除）。
+
+**Manual acceptance still owed (E2E waiver)**: 刷新扩展 → 含「能力」的笔记 → 保存 → 不点重建直接搜应命中 →
+GitHub 该次提交里没有 `search/` → 再点重建，旧分片被清理并提示条数。
+
+## Phase 0 Assessment — req-2026-10-12-synapse-capture-switch-authority
+
+**Requirement Analysis**: 业主报「捕获未开启时，页面上划词仍出现选区气泡」，要求彻底修复，验收口径为「开启就支持，不开启就关闭」。
+该症状今天上午已有两次修复（06de4ab / 3c6c95d）与一次诊断埋点（f3c96bd），仍复现 ⇒ 需查清是哪条路径绕过了开关。
+
+**Evidence (code, not inference)**:
+- 投影链路**正确**：INT 复现证明 `settings.security {enabled:false}` 之后 `local:publicPrefs.enabled === false`
+  （scratch 实测 `after.enabled = false | settings.enabled = false`）。
+- `lib/dom/bubble.ts` **正确**：气泡创建即 `hidden`，只有 `showAt` 才显示；调用点仅 `maybeShowBubble` 一处。
+- `maybeShowBubble` **正确**：每次划词重读开关，false 即 `hide()`（06de4ab 所加）。
+- **仍在复现的代码路径（D1）**：`readPrefs()` 把读取异常吞掉并返回 `DEFAULT_PUBLIC_PREFS`，其中 `enabled: true`；
+  `maybeShowBubble` 里那段「读不到开关就保持安静」的 `catch` **不可达**（`readPrefs` 永不抛）。
+  于是**投影缺失或读不到时 fail-open 成「已开启」** —— 全新 profile（`save()` 从未跑过）即无 `local:publicPrefs`，
+  与「我没有开启捕获，却出现气泡」完全吻合，且与开关写入是否成功无关。
+- **D2 页面剪藏路径不看开关**：`PAGE_CLIP_MESSAGE` 处理器只查就绪度，不查 `prefs.enabled`；关闭时应「没有入口」，
+  而不是发起请求再被 worker 拒绝后弹错误。
+- **D3 投影的 sync 块被每次设置写入清空**：`save()` → `refreshPublicPrefs(normalized)` 未带 `extra.sync`，
+  实测 `after.sync = {"lastSyncAt":null,"lastOutcome":"never"}` —— 属「自信地错」一类。
+- **D4 覆盖缺口**：E2E 只证明「开启时气泡出现」（`helpers.ts:410`），**没有任何用例证明关闭时不出现** —— 这是三次修复都留不住的原因。
+- **D5 死代码**：`start()` 里的 `if (!prefs.enabled) { prefs = await readPrefs(); }` 是早前改动的残留，读两次且不构成门。
+
+**Project Structure**: frontend-only — `apps/extension`（WXT + TS, MV3）+ 伴生进程未涉及。
+**Complexity Assessment**: M —— 改动横跨内容脚本门禁 / 投影读写 / worker 两处入口 / popup 状态，外加双向断言与 E2E 规格；
+不新增依赖、不新增 message type（除非选「开关变更广播」方案）。
+**Stability Level**: standard —— 但开关语义是用户对产品的信任点（开就开、关就关），错一次就等于产品不听话。
+**Frontend Impact**: yes —— popup 开关显示与「关闭时无任何捕获入口」的一致性。
+**Test Strategy Hint**: frontend-M —— UNIT（门禁 fail-closed、投影守恒）+ INT（开关写入后投影/拒绝路径）+ E2E（关闭时不出现气泡，沿用豁免则记 Gap）。
+**Recommended Strategy**: Phase 2 Plan → Phase 3 Dev → Phase 4 Test（M 跳过 Blueprint）。
+**Recommended Scope**:
+  1. 门禁改为 **fail-closed**：开关读不到 / 投影缺失 / 值非法 ⇒ 一律不出气泡、不提供捕获。
+  2. 开关成为唯一真源：气泡、页面剪藏、快捷键、worker `capture.request` 四处同源，关闭即全部无入口。
+  3. 修 D3（投影 sync 块守恒）与 D4（删死代码）。
+  4. 双向断言：开 → 气泡出现且可剪藏；关 → 无气泡、无入口、无错误提示；读不到 → 按关处理。
+  5. E2E 规格补齐「关闭不出现」用例（本需求是否运行浏览器套件按既有豁免记 Gap）。
+**Open question for B.0**: 「未开启」的判定口径 —— 默认是否应当**关闭**（opt-in，用户显式开启后才有气泡），
+还是保持默认开启、只保证「关掉后确实关掉」。这决定全新安装的行为，需业主定。
 **Confirmation Level**: reduced (M).
 
 ## Session Goal — req-2026-09-30-synapse-manual-entry

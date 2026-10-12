@@ -1,32 +1,21 @@
-# OmniDev Flow Board
+# Flow Board
 
-- status: running
-- mode: auto (autopilot)
-- autopilot: true
-- current: Phase 3 — Development (in progress; pre_dev confirmed long ago)
-- started: 2026-09-29T17:50:00+08:00
+| Field | Value |
+|-------|-------|
+| status | **done** |
+| mode | auto (autopilot) |
+| requirement | req-2026-10-10-synapse-index-locality |
+| updated_at | 2026-10-12T15:58:00+08:00 |
 
 | Phase | Name | State |
 |-------|------|-------|
-| 0 | Assessment | ✅ done |
-| 1 | Blueprint | ✅ done |
-| 2 | Planning | ✅ done |
-| 3 | Development | ✅ done — 判据/门禁文档 · 全量审计 · 提案闭环 · 冲突决策面 · 失败可读 · 复习回路 · SSH 克隆引导 · 首启内容档位显式选择 · E2E 12→19 · B.22 iteration 4 PASS |
-| 4 | Testing | ⏳ pending |
-| 5 | Deploy | ⏳ pending |
+| 0 | Assessment | done - M |
+| 1 | Blueprint | skipped (M) |
+| 2 | Planning | done - 04-design F17 / 05-test-plan / 02-plan |
+| 3 | Development | done - write path moved to the machine, query no longer falls back, migration in rebuild, B.22 PASS |
+| 4 | Testing | done - UNIT 645 / INT 139 / REG 416, E2E waived (gap recorded) |
+| 5 | Deploy | skipped (unpacked extension, no production deploy) |
 
-## Requirement
-
-`req-2026-09-29-synapse-workflow-elegance` — 把"对用户知识工作流的理解深度 + AI 与用户协作的优雅程度"
-确立为基本设计理念并写入文档与门禁；按该理念审计全部已实现功能（证据化）；统一优化审计发现的问题。
-
-Previous requirement `req-2026-07-09-synapse-git-sync` is **complete** (Phases 0–3 + B.22 PASS; Phase 4/5 not run).
-Superseded artifacts are archived to their paired `*-history.md` before their first rewrite.
-
-## Controls
-
-- Open: `/od board` or `$od board`
-- Manual next: `/od board next` · Pause: `/od x`
-- Required phases **0** and **3** cannot be skipped.
-Hard gates (`b0_confirm`, `pre_dev` M/L/XL, `deploy_prod`, `test_gate_fail`, manual `security_iterate_confirm`) still ask.
-
+## Next
+Nothing scheduled. Manual acceptance owed: capture a note containing 能力 and search it WITHOUT rebuilding,
+then confirm the commit carries no search/ directory.

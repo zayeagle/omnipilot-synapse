@@ -45,6 +45,8 @@ test('TC-E2E-08 finds a Chinese record that was pulled from the repository', asy
     expect(synced.ok).toBe(true);
     const rebuilt = await sendToExtension(options, 'search.rebuild');
     expect(rebuilt.ok).toBe(true);
+    // The index lives on this machine: the pull indexed what it fetched, and no shard was committed.
+    expect([...github.files.keys()].some((key) => key.includes('search/'))).toBe(false);
     const found = await sendToExtension(options, 'search.query', { text: '能力' });
     expect(found.ok).toBe(true);
 

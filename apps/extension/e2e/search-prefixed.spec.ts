@@ -48,6 +48,8 @@ test('TC-E2E-09 finds a note under a path prefix by a word in its body', async (
 
     expect(recordPath.startsWith('notes/')).toBe(true);
     expect(hits.length).toBeGreaterThan(0);
+    // A prefixed layout keeps the same rule: the index is on this machine, not under notes/search/.
+    expect([...github.files.keys()].some((key) => key.includes('search/'))).toBe(false);
   } finally {
     await extension.dispose();
     await server.close();

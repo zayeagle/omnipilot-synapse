@@ -239,7 +239,13 @@ export class SearchIndex {
     let wanted: readonly string[] = keys;
     try {
       const listed = await this.store.listShards();
-      if (listed.length < DIRECTORY_LISTING_CEILING) {
+      /*
+       * An EMPTY listing is not evidence that nothing exists. Treating it as one filtered every candidate
+       * away, so a write saw shards that DO exist as absent and overwrote other records' postings with
+       * only its own - silent index corruption. Only a listing that actually listed something may narrow
+       * the reads; an empty one is a store that cannot answer, and the reads happen instead.
+       */
+      if (listed.length > 0 && listed.length < DIRECTORY_LISTING_CEILING) {
         const present = new Set(listed);
         wanted = keys.filter((key) => present.has(key));
       }

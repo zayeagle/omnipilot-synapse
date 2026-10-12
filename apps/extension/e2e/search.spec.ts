@@ -49,10 +49,12 @@ test('TC-E2E-03 a captured note is found by a query, with a snippet from its tex
     const synced = await sendToExtension(options, 'sync.now', { reason: 'manual' });
     expect(synced.ok).toBe(true);
 
-    // The shards are the committed half of the index. `search.rebuild` is the recovery path the
-    // options page offers; running it here makes the shards exist for a store captured in this run.
+    // The capture indexed the note on THIS machine (F17), so it is findable without a rebuild - and the
+    // repository holds records only. The rebuild is still exercised as the recovery path the options page
+    // offers, and it must leave the query answering.
     const rebuilt = await sendToExtension(options, 'search.rebuild');
     expect(rebuilt.ok).toBe(true);
+    expect([...github.files.keys()].some((key) => key.includes('search/'))).toBe(false);
 
     const reply = await sendToExtension(options, 'search.query', { text: 'forgetting', limit: 10 });
     expect(reply.ok).toBe(true);

@@ -31,7 +31,6 @@ import { createGithubApi, type FetchLike } from '../store/github-api';
 import { vaultKdfFromEnvelope } from '../store/vault-codec';
 import { createGitTransportStore } from '../store/git-transport';
 import { createRepoStore, type RepoStore } from '../store/repo-store';
-import { isShardKey } from '../search/tokenize';
 import { loadStoreConfig, selectCodec, storeConfigFileIfMissing, switchTier } from '../store/tier';
 import type { ContentCodec } from '../store/codec';
 import type { CkfRecord } from '../core/ckf';
@@ -48,7 +47,7 @@ import {
   type SyncRemote,
   type SyncReport,
 } from '../sync/engine';
-import { planCardDecision, type CardDecisionShards } from '../cards/decide';
+import { planCardDecision } from '../cards/decide';
 import { planSourceArchive } from '../sources/archive';
 import { planSourceDelete } from '../sources/delete';
 import { dueForReview, parseReviewFile } from '../local/insights';
@@ -67,7 +66,7 @@ import {
 } from '../search/local-store';
 import type { SearchStore } from '../search/index';
 import type { LocalShardBackend } from '../search/local-store';
-import { documentOf, mergeDocuments } from '../search/postings';
+import { documentOf, mergeDocuments, shardPath } from '../search/postings';
 import type { SyncReason } from '../messages';
 import {
   validateCapturePageRequest,
@@ -362,7 +361,7 @@ export async function performSync(
     throw error;
   }
   const { remote, codec, prefix } = resolved;
-  const { index, drain } = buildSearchIndex(remote, prefix, cache, context);
+  const index = buildSearchIndex(remote, prefix, cache, context);
   try {
     const report = await runSync(
     {
@@ -373,11 +372,13 @@ export async function performSync(
       prefix,
       session: context.session,
       policy: settings.syncPolicy,
-        drainShards: drain,
         ...(context.now ? { now: context.now } : {}),
       },
       reason,
     );
+    // The run kept the index in step with the cache - pulls and pushes upsert, removals remove - so
+    // record which records it now describes. A query reads that signature before trusting it.
+    await refreshIndexSignature(context, cache);
     /*
      * A success is recorded too. Only the failure path used to write state, so a sync that succeeded left the
      * panel reading "never synced" - a surface that was confidently wrong, which is the exact failure mode
@@ -404,16 +405,69 @@ export async function performSync(
 }
 
 /**
- * The shard operations a card decision needs, read against the repository so the postings travel with the card
- * in the same commit (the same rule captures follow since T5.7).
+ * The index operations a writer needs, served by THIS MACHINE.
+ *
+ * They keep the shape they had when the shards rode in the record's commit (`change`/`remove` answer
+ * with the files to fold into it) and answer with none, because the index no longer travels with the
+ * record (04-design F16/F17): the write has already happened by the time they return.
+ *
+ * `refresh` re-records which records the index was built from. Every path that changes the index calls
+ * it, so `shouldUseLocalIndex` stays a real check instead of a flag that is always true.
  */
-function cardShards(store: RepoStore, prefix: string | null): CardDecisionShards {
-  const shards = createRemoteShardStore(store, prefix);
-  const index = new SearchIndex({ store: shards, prefix });
+function localShards(
+  context: BackgroundContext,
+  prefix: string | null,
+  cache: SyncCache,
+): LocalShards {
+  const index = new SearchIndex({ store: localIndex(context).store, prefix });
+  const refresh = (): Promise<void> => refreshIndexSignature(context, cache);
   return {
-    change: (card, previous) => index.changedShards(card, previous),
-    remove: (card, path) => index.remove(card.id, path, card),
+    change: async (record: CkfRecord, previous?: CkfRecord) => {
+      await index.upsert(record, previous);
+      await refresh();
+      return [];
+    },
+    remove: async (record: CkfRecord, path: string) => {
+      await index.remove(record.id, path, record);
+      await refresh();
+      return [];
+    },
+    refresh,
   };
+}
+
+/** The writer-facing shape of the machine's index: the legacy `change`/`remove` pair, plus currency. */
+interface LocalShards {
+  change(record: CkfRecord, previous?: CkfRecord): Promise<readonly RepoFile[]>;
+  remove(record: CkfRecord, path: string): Promise<readonly RepoFile[]>;
+  refresh(): Promise<void>;
+}
+
+/** Record which records this machine's index was built from, so a query knows whether to trust it. */
+async function refreshIndexSignature(context: BackgroundContext, cache: SyncCache): Promise<void> {
+  const current = signatureOf((await cache.all()).map((entry) => `${entry.path}:${entry.updatedAt}`));
+  await markBuiltFrom(localIndex(context).backend, current);
+}
+
+/**
+ * Whether this machine's index can answer for the records it can see right now.
+ *
+ * Both halves matter and they are different failures: nothing has been built here yet (no shards), or it
+ * describes a record set that has since moved. A repository head is deliberately not consulted - what
+ * makes an index stale is the RECORDS changing, and the two sides read the same cache.
+ */
+async function localIndexIsUsable(
+  context: BackgroundContext,
+  local: { store: SearchStore; backend: LocalShardBackend },
+  cache: SyncCache,
+): Promise<boolean> {
+  const keys = await local.store.listShards().catch(() => [] as readonly string[]);
+  const current = signatureOf((await cache.all()).map((entry) => `${entry.path}:${entry.updatedAt}`));
+  return shouldUseLocalIndex({
+    shards: keys.length,
+    builtFrom: await readBuiltFrom(local.backend),
+    current,
+  });
 }
 
 /**
@@ -432,23 +486,20 @@ function localIndex(context: BackgroundContext): { store: SearchStore; backend: 
   return created;
 }
 
-/** The index reads its shards out of the repository; the cache supplies the text for snippets. */
+/**
+ * The index, reading its shards out of THIS MACHINE (04-design F16/F17) and its text out of the cache.
+ *
+ * The repository is still read for the record manifest: it is what lets a hit be described (title,
+ * snippet) before the record cache has warmed up, and it owns nothing about the index itself.
+ */
 function buildSearchIndex(
   remote: SyncRemote,
   prefix: string | null,
   cache: SyncCache,
   context: BackgroundContext,
-  /**
-   * Where the shards live. Left out, they come from the repository (the historical layout); the local store is
-   * passed once this machine owns its index. The drain only exists for the repository case, because a local
-   * write has no commit to ride in.
-   */
-  localStore?: SearchStore,
-): { index: SearchIndex; drain: () => import('../store/types').RepoFile[] } {
-  const shards = localStore ?? createRemoteShardStore(remote, prefix);
-  const remoteShards = localStore ? null : createRemoteShardStore(remote, prefix);
+): SearchIndex {
   const index = new SearchIndex({
-    store: shards,
+    store: localIndex(context).store,
     prefix,
     docs: async () => {
       const cached = (await cache.all())
@@ -486,22 +537,21 @@ function buildSearchIndex(
     },
     ...(context.now ? { now: context.now } : {}),
   });
-  return { index, drain: () => remoteShards?.drain() ?? [] };
+  return index;
 }
 
 /**
- * The shard files a record changes, read against the repository so they can ride in its commit (T5.7).
+ * The index operation a capture (or a queue replay) hands to `CaptureService`.
  *
- * Built from the *store*, not from the sync transport: a capture commits through the token path even
- * when the sync mode is SSH, so the shards it produces must be produced the same way.
+ * It writes into this machine's index and returns no files, so a capture's commit carries the note and
+ * nothing else. Indexing the note in the repository instead is what grew a file per word bucket per
+ * capture - and left search reading a copy that the capture had not updated.
  */
 export function shardProvider(
-  store: RepoStore,
+  context: BackgroundContext,
   prefix: string | null,
-): (record: CkfRecord) => Promise<RepoFile[]> {
-  const shards = createRemoteShardStore(store, prefix);
-  const index = new SearchIndex({ store: shards, prefix });
-  return (record) => index.changedShards(record);
+): (record: CkfRecord) => Promise<readonly RepoFile[]> {
+  return localShards(context, prefix, createSyncCache(context)).change;
 }
 
 /** Filters are part of the query language (`tag:x`), so they are folded into the text. */
@@ -684,7 +734,7 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       const service = new CaptureService({
         store,
         queue: context.queue,
-        shards: shardProvider(store, settings.github.pathPrefix || null),
+        shards: shardProvider(context, settings.github.pathPrefix || null),
         // The first write of a capture also records which tier this repository holds, so it describes
         // itself from its first commit onward instead of leaving every client to assume (T7.1).
         bootstrap: async () => {
@@ -940,8 +990,8 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       const settings = await context.settings.load();
       const prefix = settings.github.pathPrefix || null;
       const index = await store.readIndex();
-      const shards = createRemoteShardStore(store, prefix);
-      const searchIndex = new SearchIndex({ store: shards, prefix });
+      // The resolved copy is indexed on this machine, like every other write.
+      const localIndexForConflict = localShards(context, prefix, syncCache);
 
       const plan = await planConflictResolution(
         { path, conflictPath, action },
@@ -949,7 +999,7 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
           codec: store.contentCodec,
           index,
           read: (candidate) => store.readFile(candidate),
-          shards: { change: (survivor, loser) => searchIndex.changedShards(survivor, loser) },
+          shards: { change: (survivor, loser) => localIndexForConflict.change(survivor, loser) },
           prefix,
           ...(context.now ? { now: context.now } : {}),
         },
@@ -1000,22 +1050,18 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
     'search.query': async (request) => {
       const { text, limit, filters } = validateSearchQuery(request.payload);
       const { remote, prefix } = await resolveSyncRemote(context);
-      /*
-       * Dual read while the index moves to this machine: the local index answers when it has shards, and the
-       * repository answers otherwise. That keeps every existing installation working through the transition
-       * without a flag, and the fallback disappears with the repository layout in the migration step.
-       */
       const local = localIndex(context);
-      const localKeys = await local.store.listShards().catch(() => [] as readonly string[]);
-      const state = await syncCache.state();
-      // The signature comes from the same cache the rebuild reads, so the two sides cannot disagree.
-      const current = signatureOf((await syncCache.all()).map((entry) => `${entry.path}:${entry.updatedAt}`));
-      const usable = shouldUseLocalIndex({
-        shards: localKeys.length,
-        builtFrom: await readBuiltFrom(local.backend),
-        current,
-      });
-      const { index } = buildSearchIndex(remote, prefix, syncCache, context, usable ? local.store : undefined);
+      /*
+       * The index is this machine's and there is no repository copy left to fall back to (04-design
+       * F16/F17). So an index that is missing or stale says exactly that, with the action that fixes it,
+       * instead of reading a repository that no longer holds one — which is how a captured note stayed
+       * unfindable while the panel said "no matches" rather than "rebuild".
+       */
+      if (!(await localIndexIsUsable(context, local, syncCache))) {
+        const built = (await local.store.listShards().catch(() => [] as readonly string[])).length > 0;
+        return ok({ hits: [], needsRebuild: built, indexMissing: !built });
+      }
+      const index = buildSearchIndex(remote, prefix, syncCache, context);
       const query = withFilters(text, filters);
       const hits = await index.query(query, { limit });
       return ok({
@@ -1028,7 +1074,7 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
     'search.rebuild': async () => {
       const { remote, prefix } = await resolveSyncRemote(context);
       const local = localIndex(context);
-      const { index } = buildSearchIndex(remote, prefix, syncCache, context, local.store);
+      const index = buildSearchIndex(remote, prefix, syncCache, context);
       /*
        * The rebuild is derived FROM THE RECORDS, and the records live in the repository. Reading them only
        * from the local cache meant a cold cache produced a rebuild that wrote nothing at all - while the UI
@@ -1064,23 +1110,50 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       const indexable = records.filter((entry) =>
         Object.values(documentOf(entry.record, entry.path).fields).some((field) => field.length > 0),
       ).length;
-      // No drain: a local write has no commit to ride in, and the rebuild wrote through the local store.
       const files = await index.rebuild(records.map((entry) => entry.record));
       const pending = dedupeFiles(files);
-      if (pending.length > 0) {
+      // Nothing here is committed: the index belongs to this machine (04-design F16). `rebuild` wrote the
+      // shards through the local store while it ran, and this signature records which records they describe.
+      if (pending.length > 0) await markBuiltFrom(local.backend, signature);
+
       /*
-       * Shards written under the old key scheme are DELETED, not blanked: the query rejects the key, so a blank
-       * shard at the same path kept the index permanently "stale" and made the rebuild button useless. The
-       * commit API expresses a deletion as a tree entry with `sha: null`, which this path already supports.
+       * Migration — the one place the repository's copy of the index is removed.
+       *
+       * It runs HERE because a rebuild is the moment this machine is guaranteed to hold a usable index:
+       * deleting the repository's shards any earlier would leave neither side able to answer a query.
+       * `search/**` is derived data (every posting in it is recomputed from the records, which are not
+       * touched), so this removes nothing the user wrote — and a transport that cannot delete says so
+       * instead of pretending, because the local index already works and its replacement (Token mode) is
+       * the action that finishes the cleanup.
        */
-      /*
-       * Nothing is committed. The index belongs to this machine now (04-design F16): the shards went into the
-       * local store while the rebuild ran, and the signature above records which records they describe. The
-       * repository keeps only the records.
-       */
-      await markBuiltFrom(local.backend, signature);
+      let cleaned = 0;
+      let cleanupSkipped: string | null = null;
+      if (await localIndexIsUsable(context, local, syncCache)) {
+        try {
+          const store = await resolveStore(context);
+          const stale = (await createRemoteShardStore(store, prefix).listShards()).filter(
+            /*
+             * Confinement, in the one place a removal path is built out of a listing: a name that could
+             * walk out of the shard directory is refused rather than joined into a path. The listing comes
+             * from the repository, so it is input, not a promise.
+             */
+            (key) =>
+              key.length > 0 && !key.includes('/') && !key.includes('\\') && key !== '.' && key !== '..',
+          );
+          if (stale.length > 0) {
+            await store.commitFiles(
+              [],
+              `index: keep it on the machine that reads it (${stale.length} shard(s))`,
+              stale.map((key) => shardPath(key, prefix)),
+            );
+            cleaned = stale.length;
+          }
+        } catch (error) {
+          // A repository with no `search/` directory is the finished state, not a failure.
+          if (!(error instanceof NotFoundError)) cleanupSkipped = errorCodeOf(error);
+        }
       }
-      return ok({ records: records.length, shards: pending.length, indexable });
+      return ok({ records: records.length, shards: pending.length, indexable, cleaned, cleanupSkipped });
     },
 
     'review.due': async () => {
@@ -1158,13 +1231,16 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
       if (record.kind !== 'source') throw new MessageError('note: the target record is not a note');
 
       const prefix = settings.github.pathPrefix || null;
+      const shards = localShards(context, prefix, syncCache);
       const plan = await planSourceDelete(
         { record, path, index },
-        { shards: cardShards(store, prefix), prefix },
+        { shards, prefix },
       );
       await store.commitFiles(plan.files, plan.message, plan.deleted);
       try {
-        await createSyncCache(context).forget(path);
+        await syncCache.forget(path);
+        // The record left the cache, so the signature the index was built from moved with it.
+        await shards.refresh();
       } catch {
         // The cache is disposable: a delete that landed must not be reported as failed.
       }
@@ -1188,14 +1264,16 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
 
       const prefix = settings.github.pathPrefix || null;
       const encoded = await store.contentCodec.encodeRecord(record, prefix);
+      const shards = localShards(context, prefix, syncCache);
       const plan = await planSourceArchive(
         { record, path, content: encoded.content, index },
-        { shards: cardShards(store, prefix), prefix, ...(context.now ? { now: context.now } : {}) },
+        { shards, prefix, ...(context.now ? { now: context.now } : {}) },
       );
       await store.commitFiles(plan.files, plan.message);
       // After the commit, so a failed write cannot evict a cache entry for a note that is still there.
       try {
-        await createSyncCache(context).forget(path);
+        await syncCache.forget(path);
+        await shards.refresh();
       } catch {
         // The cache is disposable and rebuildable; an archive that landed must not be reported as failed.
       }
@@ -1223,7 +1301,7 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
         {
           codec: store.contentCodec,
           index,
-          shards: cardShards(store, prefix),
+          shards: localShards(context, prefix, syncCache),
           prefix,
           ...(context.now ? { now: context.now } : {}),
         },
@@ -1281,7 +1359,7 @@ async function runDistill(
     settings,
     secrets,
     fetchImpl: context.fetchImpl,
-    shards: shardProvider(store, settings.github.pathPrefix || null),
+    shards: shardProvider(context, settings.github.pathPrefix || null),
     ...(context.now ? { now: context.now } : {}),
   });
   return service.distill(payload);

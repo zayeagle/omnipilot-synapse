@@ -239,7 +239,7 @@ describe('SearchIndex (F4 INT)', () => {
     expect((await index.query('spaced repetition')).needsRebuild).toBe(false);
   });
 
-  it('TC-F4-I04 touches only the shards that exist, so a missing shard costs no request', async () => {
+  it('TC-F4-I04 reads the candidates when the listing is empty, and narrows to what exists when it is not', async () => {
     const store = new MemoryShardStore();
     const index = new SearchIndex({ store, now: () => NOW });
     const first = newSourceItem({
@@ -250,10 +250,16 @@ describe('SearchIndex (F4 INT)', () => {
       capturedAt: new Date(NOW),
     });
 
-    // A cold repository: every candidate key is absent, and absence must not cost a round trip.
-    expect(index.shardsFor(first).length).toBeGreaterThan(0);
+    /*
+     * A cold store lists NOTHING - and an empty listing is not evidence that the shards are absent: a
+     * store that cannot answer looks identical. Treating it as evidence filtered every candidate away, so
+     * a write overwrote shards that did exist with only its own postings (silent index corruption). The
+     * candidates are read instead; they come back null, and the write proceeds.
+     */
+    const candidates = index.shardsFor(first);
+    expect(candidates.length).toBeGreaterThan(0);
     await index.changedShards(first);
-    expect(store.reads).toEqual([]);
+    expect(new Set(store.reads)).toEqual(new Set(candidates));
     await index.upsert(first);
 
     // A second record sharing that vocabulary reads exactly the shards that now exist.

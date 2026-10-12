@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "status": "running",
+  "status": "done",
   "mode": "auto",
   "autopilot": true,
-  "current_phase": 3,
+  "current_phase": 5,
   "phases_enabled": [
     0,
     1,
@@ -12,14 +12,17 @@
     4,
     5
   ],
-  "phases_skipped": [],
+  "phases_skipped": [
+    1,
+    5
+  ],
   "phases_done": [
     0,
-    1,
     2,
-    3
+    3,
+    4
   ],
-  "started_at": "2026-07-09T00:00:00+08:00",
-  "updated_at": "2026-09-29T19:50:00+08:00",
-  "last_action": "req-2026-09-30-synapse-auth-tier-integrity: deep audit found P0 (SSH mode half-wired) + P1 (repo-recorded tier never read); both fixed and verified (UNIT 600 / INT 120 / E2E 19); B.22 iteration 5 PASS. Phase 4/5 not run"
+  "started_at": "2026-10-12T14:25:00+08:00",
+  "updated_at": "2026-10-12T15:58:00+08:00",
+  "last_action": "req-2026-10-10-synapse-index-locality complete: M -> Plan -> Dev -> Test; B.22 PASS; E2E stays waived with the gap recorded; no deploy (unpacked extension)"
 }

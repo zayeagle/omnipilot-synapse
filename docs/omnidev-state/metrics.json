@@ -590,8 +590,67 @@
       "blocking_open": 0,
       "detail": "new write primitive (.omnipilot/config.json) is server-derived and rides the capture commit; never overwrites a recorded tier, never guesses for content without a record"
     }
+    },
+    {
+      "type": "requirement_start",
+      "at": "2026-10-12T15:55:00+08:00",
+      "branch": "main",
+      "platform": "dsh",
+      "complexity": "M"
+    },
+    {
+      "type": "interactive_prompt",
+      "at": "2026-10-12T15:55:00+08:00",
+      "method": "dsh_ask",
+      "platform": "dsh",
+      "decision_point": "phase0_complexity",
+      "native_attempted": true,
+      "selected": "autopilot"
+    },
+    {
+      "type": "board_start",
+      "at": "2026-10-12T15:55:00+08:00",
+      "mode": "auto",
+      "skip": []
+    },
+    {
+      "type": "autopilot_default",
+      "decision_point": "phase2_plan_ready",
+      "picked": "next"
+    },
+    {
+      "type": "phase_artifact",
+      "phase": 2,
+      "artifacts": ["04-design.md", "05-test-plan.md", "02-plan.md"],
+      "archived_previous_to": ["04-design-history.md", "05-test-plan-history.md", "02-plan-history.md"]
+    },
+    {
+      "type": "security_audit",
+      "at": "2026-10-12T15:55:00+08:00",
+      "status": "PASS",
+      "iteration": 1,
+      "blocking_open": 0,
+      "detail": "F17: the repository receives no index material at all any more (vault plaintext-postings exposure removed); S4-01 (path built from a repository listing) fixed in-iteration; S6-01 (machine-local index is plaintext) accepted, carried to backlog"
+    },
+    {
+      "type": "test_complete",
+      "at": "2026-10-12T15:55:00+08:00",
+      "unit": 645,
+      "int": 139,
+      "reg": 416,
+      "companion_unit": 48,
+      "companion_sys": 8,
+      "e2e": "waived",
+      "build_kb": 451.41
+    },
+    {
+      "type": "requirement_end",
+      "at": "2026-10-12T15:55:00+08:00",
+      "status": "completed",
+      "phase5": "skipped (unpacked extension, no production deploy)"
+    }
   ],
-  "last_requirement": "req-2026-09-30-synapse-manual-entry",
-  "last_phase": 3,
-  "updated_at": "2026-10-08T10:54:18.367Z"
+  "last_requirement": "req-2026-10-10-synapse-index-locality",
+  "last_phase": 5,
+  "updated_at": "2026-10-12T15:55:00+08:00"
 }

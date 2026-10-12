@@ -548,8 +548,8 @@ describe('sync diagnosis (F17 INT)', () => {
   });
 });
 
-describe('search end to end (F16 INT)', () => {
-  it('TC-F16-I01 a repository with records but no index rebuilds, and then answers', async () => {
+describe('search end to end (F16/F17 INT)', () => {
+  it('TC-F17-I01 a capture is findable at once, and nothing about the index is committed', async () => {
     const worker = await configuredWorker();
     const captured = await send(worker, 'capture.request', {
       mode: 'note',
@@ -557,49 +557,74 @@ describe('search end to end (F16 INT)', () => {
       title: 'E2E 能力可以提升信任',
       selection: '能力可以提升我们对自己直觉的信任',
     });
-    console.log('E2E capture ' + JSON.stringify({ ok: captured.ok, code: captured.ok ? null : captured.code }));
     expect(captured.ok).toBe(true);
 
-    // The state the user is in: the records are in the repository, the index is not.
-    for (const key of [...worker.files.keys()]) if (key.startsWith('search/')) worker.files.delete(key);
+    /*
+     * The owner's bug, as a test: the capture used to write its shards into the REPOSITORY while the query
+     * read this machine's index, so a note written a second earlier could not be found - and the repository
+     * grew a file per word bucket per capture. Both halves are asserted here.
+     */
+    const immediately = await send(worker, 'search.query', { text: '能力' });
+    const immediate = immediately.ok
+      ? (immediately.data as { hits?: unknown[]; needsRebuild?: boolean; indexMissing?: boolean })
+      : null;
+    const repositoryShards = [...worker.files.keys()].filter((key) => key.startsWith('search/'));
+    console.log('F17 capture ' + JSON.stringify({
+      hits: immediate?.hits?.length ?? null,
+      indexMissing: immediate?.indexMissing ?? null,
+      repositoryShards: repositoryShards.length,
+    }));
+    expect(immediate?.hits?.length ?? 0).toBeGreaterThan(0);
+    expect(immediate?.needsRebuild).not.toBe(true);
+    expect(repositoryShards).toEqual([]);
 
-    const before = await send(worker, 'search.query', { text: '能力' });
-    const beforeData = before.ok ? (before.data as { needsRebuild?: boolean }) : null;
-    console.log('E2E before ' + JSON.stringify({ ok: before.ok, code: before.ok ? null : before.code, needsRebuild: beforeData?.needsRebuild ?? null }));
+    // A rebuild now writes nothing new (the index already describes these records) and still answers.
+    const rebuilt = await send(worker, 'search.rebuild');
+    const after = await send(worker, 'search.query', { text: '能力' });
+    const afterData = after.ok ? (after.data as { hits?: unknown[]; needsRebuild?: boolean }) : null;
+    console.log('F17 rebuild ' + JSON.stringify({ ok: rebuilt.ok, hits: afterData?.hits?.length ?? null }));
+    expect(rebuilt.ok).toBe(true);
+    expect(afterData?.hits?.length ?? 0).toBeGreaterThan(0);
+  });
+
+  it('TC-F17-I03 the rebuild clears a repository index left behind by the old layout', async () => {
+    const worker = await configuredWorker();
+    await send(worker, 'capture.request', {
+      mode: 'note',
+      url: 'https://example.com/legacy',
+      title: 'LEGACY 能力可以提升信任',
+      selection: '能力可以提升我们对自己直觉的信任',
+    });
+    // What the old layout committed, and what the owner is still looking at in the repository.
+    worker.files.set('search/c02.json', JSON.stringify({ schema: 1, terms: { 能力: { n1: {} } } }));
+    worker.files.set('search/c1c.json', JSON.stringify({ schema: 1, terms: {} }));
 
     const rebuilt = await send(worker, 'search.rebuild');
-    const rebuiltData = rebuilt.ok ? (rebuilt.data as { records: number; shards: number }) : null;
-    const shardFiles = [...worker.files.keys()].filter((key) => key.startsWith('search/')).length;
-    console.log('E2E rebuilt ' + JSON.stringify({ ok: rebuilt.ok, code: rebuilt.ok ? null : rebuilt.code, rebuiltData, shardFiles }));
+    const data = rebuilt.ok ? (rebuilt.data as { cleaned?: number; cleanupSkipped?: string | null }) : null;
+    const left = [...worker.files.keys()].filter((key) => key.startsWith('search/'));
+    console.log('F17 migration ' + JSON.stringify({ ok: rebuilt.ok, cleaned: data?.cleaned ?? null, cleanupSkipped: data?.cleanupSkipped ?? null, left: left.length }));
+    expect(rebuilt.ok).toBe(true);
+    expect(left).toEqual([]);
+    expect(data?.cleaned ?? 0).toBeGreaterThan(0);
 
     const after = await send(worker, 'search.query', { text: '能力' });
-    const afterData = after.ok ? (after.data as { needsRebuild?: boolean; hits?: unknown[] }) : null;
-    console.log('E2E after ' + JSON.stringify({ ok: after.ok, code: after.ok ? null : after.code, hits: afterData?.hits?.length ?? null, needsRebuild: afterData?.needsRebuild ?? null }));
-
-    expect(rebuiltData?.shards ?? 0).toBeGreaterThan(0);
-    expect(afterData?.needsRebuild).not.toBe(true);
-    expect(afterData?.hits?.length ?? 0).toBeGreaterThan(0);
+    expect(after.ok ? ((after.data as { hits?: unknown[] }).hits?.length ?? 0) : 0).toBeGreaterThan(0);
   });
 });
 
 describe('search latency (F16 INT)', () => {
   it('TC-F16-I02 answers a query well inside three seconds with real round-trip times', async () => {
-    const fast = await configuredWorker();
-    const captured = await send(fast, 'capture.request', {
+    // Every request costs a realistic 150 ms: the budget is about wall time, and wall time is what request
+    // COUNT alone cannot tell you. The index the query reads was written by the capture itself.
+    const timed = await configuredWorker({ delayMs: 150 });
+    const captured = await send(timed, 'capture.request', {
       mode: 'note',
       url: 'https://example.com/lat',
       title: 'LAT 能力可以提升信任',
       selection: '能力可以提升我们对自己直觉的信任',
     });
     expect(captured.ok).toBe(true);
-    const rebuilt = await send(fast, 'search.rebuild');
-    expect(rebuilt.ok).toBe(true);
-    expect([...fast.files.keys()].some((key) => key.startsWith('search/'))).toBe(true);
-
-    // The same repository, but every request now costs a realistic 150 ms round trip: the budget is about
-    // wall time, and wall time is what request COUNT alone cannot tell you.
-    const timed = await configuredWorker({ delayMs: 150 });
-    for (const [key, value] of fast.files) timed.files.set(key, value);
+    expect([...timed.files.keys()].some((key) => key.startsWith('search/'))).toBe(false);
 
     const started = Date.now();
     const res = await send(timed, 'search.query', { text: '能力' });
@@ -614,32 +639,47 @@ describe('search latency (F16 INT)', () => {
   });
 });
 
-describe('a repository with no index (F16 INT)', () => {
-  it('TC-F16-I03 reports an empty index as missing, never as corrupt', async () => {
-    const worker = await configuredWorker();
-    const captured = await send(worker, 'capture.request', {
+describe('a machine with no index (F16/F17 INT)', () => {
+  it('TC-F17-I02 reports a missing index as missing, then answers once it has built one', async () => {
+    const first = await configuredWorker();
+    const captured = await send(first, 'capture.request', {
       mode: 'note',
       url: 'https://example.com/missing',
       title: 'MISSING 能力',
       selection: '能力可以提升我们对自己直觉的信任',
     });
     expect(captured.ok).toBe(true);
-    // Take the index away: the records stay, the search/ directory does not exist.
-    for (const key of [...worker.files.keys()]) if (key.startsWith('search/')) worker.files.delete(key);
 
-    const reply = await send(worker, 'search.query', { text: '能力' });
+    /*
+     * The same repository, a machine that has never built an index: the index stopped travelling with the
+     * repository (04-design F16), so this is the ordinary second-device state. It must say "not built yet"
+     * and never "corrupt" - that loop (a rebuild that writes nothing next to a permanent "needs rebuild")
+     * is what the owner actually hit.
+     */
+    const other = await configuredWorker();
+    for (const [key, value] of first.files) other.files.set(key, value);
+
+    const reply = await send(other, 'search.query', { text: '能力' });
     expect(reply.ok).toBe(true);
     if (!reply.ok) throw new Error('unreachable');
     const data = reply.data as { needsRebuild?: boolean; indexMissing?: boolean; hits?: unknown[] };
-    console.log('MISSING-INDEX ' + JSON.stringify({
-      indexMissing: data.indexMissing ?? null,
-      needsRebuild: data.needsRebuild ?? null,
-      hits: data.hits?.length ?? null,
-    }));
-    // The loop the owner hit: "needs rebuild" next to a rebuild that writes nothing.
     expect(data.indexMissing).toBe(true);
     expect(data.needsRebuild).toBe(false);
     expect(data.hits?.length ?? 0).toBe(0);
+
+    // One rebuild (local work; the cold cache is filled from the repository first) and it answers.
+    const rebuilt = await send(other, 'search.rebuild');
+    const warm = await send(other, 'search.query', { text: '能力' });
+    const warmData = warm.ok ? (warm.data as { hits?: unknown[]; needsRebuild?: boolean }) : null;
+    console.log('MISSING-INDEX ' + JSON.stringify({
+      indexMissing: data.indexMissing ?? null,
+      rebuilt: rebuilt.ok,
+      hits: warmData?.hits?.length ?? null,
+      needsRebuild: warmData?.needsRebuild ?? null,
+    }));
+    expect(rebuilt.ok).toBe(true);
+    expect(warmData?.hits?.length ?? 0).toBeGreaterThan(0);
+    expect(warmData?.needsRebuild).not.toBe(true);
   });
 });
 

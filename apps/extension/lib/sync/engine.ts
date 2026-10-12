@@ -12,9 +12,9 @@
  * 1. **Change detection does not use the remote head.** The repository's own `index.json` lists every
  *    record with its `content_key`/`updated_at`, so a diff against the cache is both cheaper (one
  *    request) and correct across both transports — the companion has no `compare` API at all.
- * 2. **Pulled records do not recompute postings.** The shard that indexes a note is committed by
- *    whoever wrote the note; a pull therefore *receives* fresh shards with the same commit. Recomputing
- *    them locally would produce files nobody commits in pull-only mode.
+ * 2. **Pulled records ARE re-indexed, locally.** The index lives on this machine (04-design F16/F17),
+ *    so a pull has to compute the postings for what it just received; nothing about them is committed.
+ *    Skipping this is how a pulled note became invisible to search.
  * 3. **A path only leaves the dirty set after the commit succeeded.** A rejected push keeps the note
  *    queued (SC-F4-01) instead of pretending it landed.
  */
@@ -106,8 +106,6 @@ export interface SyncDeps {
   /** Repository path prefix (`github.pathPrefix`). The manifest lives at the prefixed index path. */
   prefix?: string | null;
   now?: () => number;
-  /** Shard files a store buffered; folded into the commit so nothing is lost. */
-  drainShards?: () => RepoFile[];
 }
 
 export interface SyncReport {
@@ -220,6 +218,9 @@ export async function runSync(deps: SyncDeps, reason: SyncReason): Promise<SyncR
       ...(source?.content_key !== undefined ? { contentKey: source.content_key } : {}),
       ...(source !== undefined ? { remoteUpdatedAt: source.updated_at } : {}),
     });
+    // The index is this machine's, so what this run pulled has to be indexed by this run: it is the
+    // only place that knows the record arrived, and a query answers from the local index.
+    await deps.index.upsert(record);
     pulled.push(path);
   }
 
@@ -229,7 +230,8 @@ export async function runSync(deps: SyncDeps, reason: SyncReason): Promise<SyncR
     const local = cachedByPath.get(path);
     await deps.cache.forget(path);
     if (local) {
-      for (const shard of await deps.index.remove(local.id, path, local.record)) files.push(shard);
+      // Local write, no files: nothing about the index is committed any more.
+      await deps.index.remove(local.id, path, local.record);
       delete nextIndex.items[local.id];
     }
     removed += 1;
@@ -268,7 +270,9 @@ export async function runSync(deps: SyncDeps, reason: SyncReason): Promise<SyncR
       }
       const content = await deps.codec.encode(local.record);
       files.push({ path: target, content });
-      for (const shard of await deps.index.changedShards(local.record)) files.push(shard);
+      // Indexed on this machine in the same run that pushes it, so the note is findable immediately -
+      // whether or not the push lands.
+      await deps.index.upsert(local.record);
       const base: IndexItem = deps.codec.indexEntry(local.record, target);
       // A conflict copy needs its own id: sharing the original's would make one of the two versions
       // invisible to every reader that resolves the index by id.
@@ -280,7 +284,6 @@ export async function runSync(deps: SyncDeps, reason: SyncReason): Promise<SyncR
       pushedPaths.push(sourcePath);
       pushed += 1;
     }
-    for (const extra of deps.drainShards?.() ?? []) files.push(extra);
   }
 
   const report: Omit<SyncReport, 'outcome' | 'pending'> = {

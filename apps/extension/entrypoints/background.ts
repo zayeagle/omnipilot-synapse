@@ -274,7 +274,7 @@ export default defineBackground(() => {
         const service = new CaptureService({
           store,
           queue,
-          shards: shardProvider(store, snapshot.github.pathPrefix || null),
+          shards: shardProvider(context, snapshot.github.pathPrefix || null),
         });
         await service.flushQueue();
       } catch {
