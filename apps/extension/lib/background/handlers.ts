@@ -56,8 +56,15 @@ import { planConflictResolution } from '../sync/conflict';
 import { createRemoteShardStore } from '../sync/shard-store';
 import type { SyncTriggers } from '../sync/triggers';
 import { SearchIndex } from '../search/index';
-import { createIndexedDbShardBackend, createLocalShardStore, createMemoryShardBackend } from '../search/local-store';
+import {
+  createIndexedDbShardBackend,
+  createLocalShardStore,
+  createMemoryShardBackend,
+  readBuiltForHead,
+  shouldUseLocalIndex,
+} from '../search/local-store';
 import type { SearchStore } from '../search/index';
+import type { LocalShardBackend } from '../search/local-store';
 import { documentOf, mergeDocuments } from '../search/postings';
 import type { SyncReason } from '../messages';
 import {
@@ -411,19 +418,14 @@ function cardShards(store: RepoStore, prefix: string | null): CardDecisionShards
  * The machine's index store, memoised per context exactly like the sync cache: two instances would each think
  * they owned the shards.
  */
-const localSearchStores = new WeakMap<BackgroundContext, SearchStore>();
+const localSearchStores = new WeakMap<BackgroundContext, { store: SearchStore; backend: LocalShardBackend }>();
 
-function localSearchStore(context: BackgroundContext): SearchStore {
+function localIndex(context: BackgroundContext): { store: SearchStore; backend: LocalShardBackend } {
   const existing = localSearchStores.get(context);
   if (existing) return existing;
-  if (context.searchStore) {
-    localSearchStores.set(context, context.searchStore);
-    return context.searchStore;
-  }
   const factory = (globalThis as { indexedDB?: IDBFactory }).indexedDB ?? null;
-  const created = createLocalShardStore(
-    factory ? createIndexedDbShardBackend(factory) : createMemoryShardBackend(),
-  );
+  const backend = factory ? createIndexedDbShardBackend(factory) : createMemoryShardBackend();
+  const created = { store: createLocalShardStore(backend), backend };
   localSearchStores.set(context, created);
   return created;
 }
@@ -993,9 +995,15 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
        * repository answers otherwise. That keeps every existing installation working through the transition
        * without a flag, and the fallback disappears with the repository layout in the migration step.
        */
-      const local = localSearchStore(context);
-      const localKeys = await local.listShards().catch(() => [] as readonly string[]);
-      const { index } = buildSearchIndex(remote, prefix, syncCache, context, localKeys.length > 0 ? local : undefined);
+      const local = localIndex(context);
+      const localKeys = await local.store.listShards().catch(() => [] as readonly string[]);
+      const state = await syncCache.state();
+      const usable = shouldUseLocalIndex({
+        shards: localKeys.length,
+        builtForHead: await readBuiltForHead(local.backend),
+        repoHead: typeof state.head === 'string' && state.head.length > 0 ? state.head : null,
+      });
+      const { index } = buildSearchIndex(remote, prefix, syncCache, context, usable ? local.store : undefined);
       const query = withFilters(text, filters);
       const hits = await index.query(query, { limit });
       return ok({

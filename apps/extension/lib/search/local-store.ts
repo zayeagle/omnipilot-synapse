@@ -115,6 +115,23 @@ export async function markBuiltForHead(backend: LocalShardBackend, head: string)
   await backend.write(INDEX_HEAD_KEY, head);
 }
 
+/**
+ * Whether this machine's index can answer for the repository as it stands.
+ *
+ * Two ways to be unusable, and they are different: nothing has been built here yet (no shards), or it was built
+ * from a head the repository has since moved past - answering from that would quietly serve the past. A
+ * repository whose head is unknown cannot make the index stale, so the index is trusted.
+ */
+export function shouldUseLocalIndex(input: {
+  shards: number;
+  builtForHead: string | null;
+  repoHead: string | null;
+}): boolean {
+  if (input.shards === 0) return false;
+  if (input.repoHead === null) return true;
+  return input.builtForHead === input.repoHead;
+}
+
 export function createLocalShardStore(backend: LocalShardBackend): SearchStore {
   return {
     // The head marker is metadata, not an index: it must never be read, parsed or listed as a shard.
