@@ -11,6 +11,9 @@ import { storage } from 'wxt/storage';
 
 import { extractPage, extractSelection } from '../lib/capture/extract';
 import { createBubble } from '../lib/dom/bubble';
+
+/** Bumped when the content script changes in a way worth seeing in a page console. */
+const BUILD_MARK = 'content-2026-10-10b';
 import { createToast } from '../lib/dom/toast';
 import { detectLang, t, type Lang } from '../lib/i18n';
 import {
@@ -185,6 +188,9 @@ async function start(): Promise<void> {
       bubble.hide();
       return;
     }
+    // Diagnostics for a switch that appeared not to work: this is the value the page actually read, and the
+    // page it runs on is what decides whether it is the current build at all.
+    console.info('[synapse] selection bubble: capture switch =', prefs.enabled, '· build', BUILD_MARK);
     bubble.showAt(current.rect);
   };
 
