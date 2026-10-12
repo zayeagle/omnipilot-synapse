@@ -155,8 +155,23 @@ async function start(): Promise<void> {
     },
   });
 
-  const maybeShowBubble = (): void => {
-    if (!prefs.enabled) return;
+  const maybeShowBubble = async (): Promise<void> => {
+    /*
+     * The switch is re-read at the moment of the selection, not only when this script was injected: a page that
+     * loaded while capture was on kept showing its bubble after the owner turned capture off, because nothing
+     * told the script. The projection is local, so this costs no round trip and makes the switch immediate.
+     */
+    try {
+      prefs = await readPrefs();
+    } catch {
+      // Cannot read the switch: stay quiet rather than offer an action that may be forbidden.
+      bubble.hide();
+      return;
+    }
+    if (!prefs.enabled) {
+      bubble.hide();
+      return;
+    }
     const current = selectionInPage();
     if (!current) {
       bubble.hide();
@@ -165,8 +180,9 @@ async function start(): Promise<void> {
     bubble.showAt(current.rect);
   };
 
-  document.addEventListener('mouseup', maybeShowBubble, true);
-  document.addEventListener('keyup', maybeShowBubble, true);
+  const onSelectionSettled = (): void => void maybeShowBubble();
+  document.addEventListener('mouseup', onSelectionSettled, true);
+  document.addEventListener('keyup', onSelectionSettled, true);
   document.addEventListener(
     'mousedown',
     (event) => {
