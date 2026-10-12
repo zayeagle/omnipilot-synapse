@@ -60,6 +60,7 @@ import {
   createIndexedDbShardBackend,
   createLocalShardStore,
   createMemoryShardBackend,
+  markBuiltFrom,
   readBuiltFrom,
   shouldUseLocalIndex,
   signatureOf,
@@ -1018,7 +1019,8 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
 
     'search.rebuild': async () => {
       const { remote, prefix } = await resolveSyncRemote(context);
-      const { index, drain } = buildSearchIndex(remote, prefix, syncCache, context);
+      const local = localIndex(context);
+      const { index } = buildSearchIndex(remote, prefix, syncCache, context, local.store);
       /*
        * The rebuild is derived FROM THE RECORDS, and the records live in the repository. Reading them only
        * from the local cache meant a cold cache produced a rebuild that wrote nothing at all - while the UI
@@ -1041,12 +1043,21 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
         await performSync(context, 'manual');
         records = (await syncCache.all()).filter((entry) => entry.record.kind !== 'review');
       }
+      /*
+       * The signature of the records this rebuild ACTUALLY indexed, taken after the cold-cache sync above: that
+       * sync is what makes the set non-empty, so measuring before it left an empty-set signature beside a full
+       * index and no query ever trusted it.
+       */
+      const signature = signatureOf(
+        (await syncCache.all()).map((entry) => `${entry.path}:${entry.updatedAt}`),
+      );
       // How many of those records carry text a term can be cut from. A rebuild can honestly write zero
       // shards while holding records (empty ones), and a bare 1 / 0 is a plausible-looking dead end.
       const indexable = records.filter((entry) =>
         Object.values(documentOf(entry.record, entry.path).fields).some((field) => field.length > 0),
       ).length;
-      const files = [...(await index.rebuild(records.map((entry) => entry.record))), ...drain()];
+      // No drain: a local write has no commit to ride in, and the rebuild wrote through the local store.
+      const files = await index.rebuild(records.map((entry) => entry.record));
       const pending = dedupeFiles(files);
       if (pending.length > 0) {
       /*
@@ -1054,9 +1065,12 @@ export function createHandlers(context: BackgroundContext): HandlerMap {
        * shard at the same path kept the index permanently "stale" and made the rebuild button useless. The
        * commit API expresses a deletion as a tree entry with `sha: null`, which this path already supports.
        */
-      if (pending.length > 0) {
-        await remote.commitFiles(pending, 'search: rebuild index');
-      }
+      /*
+       * Nothing is committed. The index belongs to this machine now (04-design F16): the shards went into the
+       * local store while the rebuild ran, and the signature above records which records they describe. The
+       * repository keeps only the records.
+       */
+      await markBuiltFrom(local.backend, signature);
       }
       return ok({ records: records.length, shards: pending.length, indexable });
     },
