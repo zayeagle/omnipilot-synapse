@@ -98,9 +98,27 @@ export function createIndexedDbShardBackend(factory: IDBFactory): LocalShardBack
  * Writes land immediately: there is no commit to batch them into, which is the point - nothing about the index
  * touches the network any more.
  */
+/**
+ * The repository head the index was built from, kept beside the shards.
+ *
+ * Reserved key, and deliberately not a shard key: a shard key is a bucket (c00..c3f) or the empty-term marker,
+ * so a leading @ can never collide. Reading it is how a later sync knows whether the index still describes the
+ * records it can see - without this, a head that moved would leave the index quietly answering for the past.
+ */
+export const INDEX_HEAD_KEY = '@head';
+
+export async function readBuiltForHead(backend: LocalShardBackend): Promise<string | null> {
+  return await backend.read(INDEX_HEAD_KEY);
+}
+
+export async function markBuiltForHead(backend: LocalShardBackend, head: string): Promise<void> {
+  await backend.write(INDEX_HEAD_KEY, head);
+}
+
 export function createLocalShardStore(backend: LocalShardBackend): SearchStore {
   return {
-    listShards: () => backend.list(),
+    // The head marker is metadata, not an index: it must never be read, parsed or listed as a shard.
+    listShards: async () => (await backend.list()).filter((key) => key !== INDEX_HEAD_KEY),
     readShard: (key) => backend.read(key),
     writeShard: (key, content) => backend.write(key, content),
     removeShard: (key) => backend.remove(key),
